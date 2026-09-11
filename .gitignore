@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+dist/
+DerivedData/
+.superpowers/
+*.xcuserdata/
+*.xcuserstate
+.DS_Store

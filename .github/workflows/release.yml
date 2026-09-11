@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p actions "$RUNNER_TEMP/build.keychain-db"
+          security unlock-keychain -p actions "$RUNNER_TEMP/build.keychain-db"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$RUNNER_TEMP/build.keychain-db" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions "$RUNNER_TEMP/build.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/build.keychain-db" login.keychain-db
+
+      - name: Build
+        env:
+          CAPTURELY_CODE_SIGN_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          CAPTURELY_VERSION: ${{ github.ref_name }}
+          CAPTURELY_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./script/build_and_run.sh --verify
+
+      - name: Notarize and package
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent dist/Capturely.app "$RUNNER_TEMP/Capturely.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Capturely.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple dist/Capturely.app
+          ditto -c -k --keepParent dist/Capturely.app Capturely.zip
+
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          mkdir updates
+          cp Capturely.zip updates/
+          cp appcast.xml updates/
+          echo "$SPARKLE_PRIVATE_KEY" | .build/artifacts/sparkle/Sparkle/bin/generate_appcast --ed-key-file - --download-url-prefix "https://github.com/Italian-seasoning/Capturely/releases/download/${GITHUB_REF_NAME}/" updates
+          cp updates/appcast.xml appcast.xml
+
+      - name: Publish release and feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" Capturely.zip --generate-notes --title "Capturely $GITHUB_REF_NAME"
+          git fetch origin main
+          git checkout main
+          cp updates/appcast.xml appcast.xml
+          git config user.name "Italian-seasoning"
+          git config user.email "99997342+Italian-seasoning@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "chore: update Sparkle appcast for $GITHUB_REF_NAME"
+          git push origin main
