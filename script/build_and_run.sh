@@ -24,7 +24,8 @@ sign_app_bundle() {
   local signing_identity="$requested_identity"
 
   if [[ -z "$signing_identity" || "$signing_identity" == "-" || "$signing_identity" == "adhoc" ]]; then
-    codesign --force --deep --sign - --entitlements "$ENTITLEMENTS_FILE" "$APP_DIR"
+    codesign --force --deep --sign - "$FRAMEWORKS_DIR/Sparkle.framework"
+    codesign --force --sign - --entitlements "$ENTITLEMENTS_FILE" "$APP_DIR"
     cat <<'WARNING'
 warning: Capturely was ad-hoc signed because no certificate-backed code signing identity was found.
 warning: macOS may ask for Screen Recording permission again after code changes.
@@ -33,7 +34,12 @@ WARNING
     return
   fi
 
-  codesign --force --deep --options runtime --sign "$signing_identity" --entitlements "$ENTITLEMENTS_FILE" "$APP_DIR"
+  local runtime_options=()
+  if [[ "$signing_identity" == "Developer ID Application"* ]]; then
+    runtime_options=(--options runtime)
+  fi
+  codesign --force --deep "${runtime_options[@]}" --sign "$signing_identity" "$FRAMEWORKS_DIR/Sparkle.framework"
+  codesign --force "${runtime_options[@]}" --sign "$signing_identity" --entitlements "$ENTITLEMENTS_FILE" "$APP_DIR"
   echo "Signed $APP_DIR with $signing_identity"
 }
 
@@ -52,6 +58,7 @@ pkill -x "$APP_NAME" 2>/dev/null || true
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 cp "$XCODE_PRODUCT" "$MACOS_DIR/$APP_NAME"
+install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS_DIR/$APP_NAME"
 cp "$ROOT/Assets/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 
 SPARKLE_FRAMEWORK="$(find "$DERIVED_DATA_DIR/Build/Products/Release" -name Sparkle.framework -type d -print -quit)"
@@ -105,6 +112,7 @@ PLIST
 sign_app_bundle
 
 if [[ "${1:-}" == "--verify" ]]; then
+  otool -l "$MACOS_DIR/$APP_NAME" | grep -q "@executable_path/../Frameworks"
   test -x "$MACOS_DIR/$APP_NAME"
   plutil -lint "$CONTENTS_DIR/Info.plist"
   codesign --verify --strict --deep "$APP_DIR"
