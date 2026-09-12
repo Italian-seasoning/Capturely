@@ -5,4 +5,5 @@ DerivedData/
 .superpowers/
 *.xcuserdata/
 *.xcuserstate
+*.profraw
 .DS_Store
