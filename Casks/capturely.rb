@@ -4,11 +4,11 @@ cask "capturely" do
 
   url "https://github.com/Italian-seasoning/Capturely/releases/latest/download/Capturely.zip"
   name "Capturely"
-  desc "Native macOS replay clipping for games"
+  desc "Native replay clipping for games"
   homepage "https://github.com/Italian-seasoning/Capturely"
 
   auto_updates true
-  depends_on macos: ">= :tahoe"
+  depends_on macos: :tahoe
 
   app "Capturely.app"
 end
