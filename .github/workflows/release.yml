@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   release:
+    if: ${{ vars.RELEASE_AUTOMATION_ENABLED == 'true' }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4

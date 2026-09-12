@@ -56,7 +56,7 @@ xcodebuild -workspace .swiftpm/xcode/package.xcworkspace -scheme Capturely test
 
 ## Release
 
-Push a `v*` tag to run the signed, notarized GitHub release workflow. The repository secrets listed in [the workflow](.github/workflows/release.yml) must be configured first.
+Push a `v*` tag to run the signed, notarized GitHub release workflow. Configure the repository secrets listed in [the workflow](.github/workflows/release.yml), then set the `RELEASE_AUTOMATION_ENABLED` repository variable to `true`.
 
 ## Local Clip Folder
 
