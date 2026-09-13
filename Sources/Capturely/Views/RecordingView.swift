@@ -540,11 +540,11 @@ struct RecentClipDisplay: Identifiable, Equatable, Sendable {
     var thumbnailURL: URL?
     var clipURL: URL?
 
-        static let samples = [
+    @MainActor static var samples: [RecentClipDisplay] { [
         RecentClipDisplay(gameName: "ROBLOX", experienceName: "Rivals", time: "11:43:29", duration: "60s", preset: "Balanced", accent: CyberTheme.red, thumbnailURL: nil, clipURL: nil),
         RecentClipDisplay(gameName: "ROBLOX", experienceName: "Rivals", time: "11:41:08", duration: "60s", preset: "Balanced", accent: CyberTheme.deepRed, thumbnailURL: nil, clipURL: nil),
         RecentClipDisplay(gameName: "ROBLOX", experienceName: "Rivals", time: "11:39:55", duration: "60s", preset: "Balanced", accent: CyberTheme.dim, thumbnailURL: nil, clipURL: nil)
-    ]
+    ] }
 
     static func savedNow(status: RecordingDisplayStatus) -> RecentClipDisplay {
         RecentClipDisplay(

@@ -44,7 +44,7 @@ final class GameOverlayController: ObservableObject {
         }
         if panel == nil {
             let panel = GameOverlayPanel()
-            panel.setContentSize(NSSize(width: 208, height: 350))
+            panel.setContentSize(NSSize(width: 200, height: 300))
             panel.isMovableByWindowBackground = false
             panel.hasShadow = false
             panel.contentView = NSHostingView(rootView: GameOverlayView(backend: backend, controller: self, dismiss: { [weak self] in self?.hide() }))
@@ -55,7 +55,7 @@ final class GameOverlayController: ObservableObject {
             (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == backend.settings.selectedDisplayID
         } ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         if let screen {
-            panel.setFrameOrigin(CGPoint(x: screen.frame.minX, y: screen.frame.maxY - panel.frame.height))
+            panel.setFrameOrigin(CGPoint(x: screen.frame.minX, y: screen.visibleFrame.maxY - panel.frame.height - 56))
         }
         // Never activate the app or make this panel key: the game keeps focus.
         dismissTask?.cancel()
@@ -107,7 +107,7 @@ private struct GameOverlayView: View {
     var dismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "record.circle").foregroundStyle(CyberTheme.red)
                 Text("capturely").font(.system(size: 15, weight: .black)).fontWidth(.condensed)
@@ -154,9 +154,8 @@ private struct GameOverlayView: View {
             Text("⌥⌘O").font(.caption.monospaced()).foregroundStyle(CyberTheme.red)
             Spacer(minLength: 0)
         }
-        .padding(20)
-        .padding(.top, 12)
-        .frame(width: 208, height: 350)
+        .padding(14)
+        .frame(width: 200, height: 300)
         .foregroundStyle(CyberTheme.text)
         .background(.black)
         .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: 32))
@@ -191,17 +190,17 @@ private struct OverlayLiquidReveal: Shape {
     func path(in rect: CGRect) -> Path {
         let p = min(max(progress, 0), 1)
         guard p > 0 else { return Path() }
-        if reducedMotion { return Path(CGRect(x: 0, y: 0, width: rect.width, height: rect.height * p)) }
-        // A curved leading edge pours down from the corner without distorting controls.
-        let crest = sin(p * .pi) * 110
-        let edge = p * (rect.height + 110)
+        if reducedMotion { return Path(CGRect(x: 0, y: 0, width: rect.width * p, height: rect.height)) }
+        // Reveal horizontally from the display edge; controls remain undistorted.
+        let crest = sin(p * .pi) * 70
+        let edge = p * (rect.width + 70)
         var path = Path()
         path.move(to: .zero)
-        path.addLine(to: CGPoint(x: rect.width, y: 0))
-        path.addLine(to: CGPoint(x: rect.width, y: edge - crest))
-        path.addCurve(to: CGPoint(x: 0, y: edge),
-                      control1: CGPoint(x: rect.width * 0.72, y: edge - crest * 1.4),
-                      control2: CGPoint(x: rect.width * 0.3, y: edge + crest * 0.45))
+        path.addLine(to: CGPoint(x: edge, y: 0))
+        path.addCurve(to: CGPoint(x: edge - crest, y: rect.height),
+                      control1: CGPoint(x: edge + crest * 0.45, y: rect.height * 0.3),
+                      control2: CGPoint(x: edge - crest * 1.4, y: rect.height * 0.72))
+        path.addLine(to: CGPoint(x: 0, y: rect.height))
         path.closeSubpath()
         return path
     }

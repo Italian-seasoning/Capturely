@@ -154,7 +154,7 @@ import Testing
     #expect(CapturelyWindowMetrics.minimumContentHeight == 560)
     #expect(CapturelyWindowMetrics.idealContentWidth > CapturelyWindowMetrics.minimumContentWidth)
     #expect(CapturelyWindowMetrics.idealContentHeight > CapturelyWindowMetrics.minimumContentHeight)
-    #expect(CapturelyWindowMetrics.sidebarIdealWidth == 88)
+    #expect(CapturelyWindowMetrics.sidebarIdealWidth == 64)
 }
 
 @Test func scanlineRendererUsesOneRowEveryFivePoints() {

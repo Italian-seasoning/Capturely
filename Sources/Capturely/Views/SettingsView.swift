@@ -49,6 +49,25 @@ struct SettingsView: View {
                 }
                 .padding(.bottom, 6)
 
+                CyberSettingsSection(title: "Theme") {
+                    ColorPicker("Accent color", selection: Binding(get: { ThemePreferences.shared.color }, set: { ThemePreferences.shared.color = $0 }), supportsOpacity: false)
+                    HStack(spacing: 12) {
+                        ForEach([0xFF995C, 0x75D9FF, 0xC5A0FF, 0xFF80B5, 0xE0FA4D], id: \.self) { rgb in
+                            Button {
+                                ThemePreferences.shared.rgb = rgb
+                            } label: {
+                                Circle().fill(Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255))
+                                    .frame(width: 24, height: 24)
+                                    .padding(4)
+                                    .overlay(Circle().stroke(ThemePreferences.shared.rgb == rgb ? CyberTheme.text : .clear, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel([0xFF995C: "Ember", 0x75D9FF: "Ice", 0xC5A0FF: "Violet", 0xFF80B5: "Pink", 0xE0FA4D: "Acid"][rgb] ?? "Accent")
+                        }
+                    }
+                    Text("Applies instantly to the app and overlay.").font(.caption).foregroundStyle(CyberTheme.muted)
+                }
+
                 CyberSettingsSection(title: "Replay Workflow") {
                     Toggle("Log game process while capturing", isOn: Binding(get: { settings.logsGameProcess }, set: setLogsGameProcess))
                     Text("Local CSV: game CPU, memory, traffic and capture health every 2s, with samples beside clips. Traffic is not ping; unavailable counters stay blank. Session logs cap at 10 MB.").font(.caption).foregroundStyle(CyberTheme.muted)

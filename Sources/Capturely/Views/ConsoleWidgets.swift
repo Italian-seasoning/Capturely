@@ -1,11 +1,30 @@
 import SwiftUI
+import AppKit
+import Observation
+
+@MainActor @Observable
+final class ThemePreferences {
+    static let shared = ThemePreferences()
+    var rgb: Int = UserDefaults.standard.object(forKey: "themeAccentRGB") as? Int ?? 0xFF995C {
+        didSet { UserDefaults.standard.set(rgb, forKey: "themeAccentRGB") }
+    }
+    var color: Color {
+        get { Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255) }
+        set {
+            guard let color = NSColor(newValue).usingColorSpace(.sRGB) else { return }
+            rgb = (Int((color.redComponent * 255).rounded()) << 16)
+                | (Int((color.greenComponent * 255).rounded()) << 8)
+                | Int((color.blueComponent * 255).rounded())
+        }
+    }
+}
 
 enum CyberTheme {
     static let void = Color(red: 0.055, green: 0.058, blue: 0.055)
     static let panel = Color(red: 0.09, green: 0.095, blue: 0.09)
     static let panelRaised = Color(red: 0.13, green: 0.14, blue: 0.12)
-    static let red = Color(red: 0.88, green: 0.98, blue: 0.30)
-    static let deepRed = Color(red: 0.28, green: 0.31, blue: 0.23)
+    @MainActor static var red: Color { ThemePreferences.shared.color }
+    @MainActor static var deepRed: Color { red.opacity(0.3) }
     static let text = Color(red: 0.95, green: 0.95, blue: 0.88)
     static let muted = Color(red: 0.66, green: 0.69, blue: 0.61)
     static let dim = Color(red: 0.41, green: 0.44, blue: 0.38)

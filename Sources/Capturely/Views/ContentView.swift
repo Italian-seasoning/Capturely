@@ -71,13 +71,13 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 VStack(alignment: .center, spacing: 10) {
                     Image(systemName: "record.circle")
-                        .font(.system(size: 30, weight: .light))
+                        .font(.system(size: 24, weight: .light))
                         .foregroundStyle(CyberTheme.red)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 8)
                 .padding(.top, 54)
-                .padding(.bottom, 30)
+                .padding(.bottom, 20)
 
                 VStack(spacing: 4) {
                     ForEach(CapturelyPage.allCases) { page in
@@ -88,7 +88,7 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: page.systemImage).font(.system(size: 24, weight: .light))
                             .foregroundStyle(selectedPage == page ? CyberTheme.red : CyberTheme.muted)
-                            .frame(width: 72, height: 68)
+                            .frame(width: 48, height: 48)
                             .background(selectedPage == page ? CyberTheme.red.opacity(0.08) : .clear)
                             .overlay(alignment: .leading) {
                                 if selectedPage == page {
@@ -113,7 +113,7 @@ struct ContentView: View {
                     VStack(spacing: 8) {
                         Image(systemName: "rectangle.on.rectangle").font(.system(size: 20))
                         Text("⌥⌘O").font(.caption.monospaced())
-                    }.foregroundStyle(CyberTheme.red).frame(width: 72, height: 60)
+                    }.foregroundStyle(CyberTheme.red).frame(width: 48, height: 56)
                 }
                 .buttonStyle(.plain)
                 .help("Toggle in-game overlay · ⌥⌘O")
