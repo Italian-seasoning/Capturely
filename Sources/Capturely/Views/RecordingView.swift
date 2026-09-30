@@ -70,14 +70,13 @@ struct RecordingView: View {
                 VStack(alignment: .leading, spacing: 24) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("01 / RECORDING")
+                        Text("RECORDING")
                             .font(.caption.monospaced().weight(.bold))
                             .tracking(2)
                             .foregroundStyle(CyberTheme.red)
-                        Text("Never miss a moment.")
-                            .font(.system(size: 36, weight: .black))
-                            .fontWidth(.condensed)
-                            .tracking(-1.5)
+                        Text("Your next replay starts here.")
+                            .font(.system(size: 28, weight: .semibold))
+                            .tracking(-0.6)
                     }
                     Spacer()
                 }
@@ -114,13 +113,6 @@ struct RecordingView: View {
                                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                                     .tracking(1.6)
                                     .foregroundStyle(CyberTheme.muted)
-                                HStack(spacing: 4) {
-                                    ForEach(0..<14, id: \.self) { index in
-                                        Rectangle().fill(CyberTheme.red.opacity(index < 9 ? 0.8 : 0.16))
-                                            .frame(width: 8, height: 12)
-                                            .rotationEffect(.degrees(18))
-                                    }
-                                }.padding(.top, 12).accessibilityHidden(true)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             heroControls
@@ -479,7 +471,7 @@ struct QuickSettingDisplay: Identifiable, Equatable, Sendable {
         QuickSettingDisplay(label: "Hotkey", value: "⌥⌘C", systemImage: "keyboard", meterFraction: 1.0)
     ]
 
-    static func compact(status: RecordingDisplayStatus, health: CaptureHealthSnapshot, settings: AppSettings = .defaults) -> [QuickSettingDisplay] {
+    @MainActor static func compact(status: RecordingDisplayStatus, health: CaptureHealthSnapshot, settings: AppSettings = .defaults) -> [QuickSettingDisplay] {
         let preset = CapturePreset.preset(id: settings.selectedPresetID, settings: settings)
         return [
             QuickSettingDisplay(

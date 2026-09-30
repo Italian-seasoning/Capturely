@@ -17,6 +17,7 @@ enum CaptureDiagnosticEventKind: String, Codable, Equatable, Sendable {
     case clipIndexed
     case saveFailed
     case editableAudioFailed
+    case isolatedAudioUnavailable
     case captureStalledRestarting
     case captureStopped
 }

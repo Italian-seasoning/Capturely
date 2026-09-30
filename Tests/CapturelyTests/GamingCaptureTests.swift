@@ -55,6 +55,9 @@ import Testing
         writer.append(sampleBuffer: try audioSample(at: time, frequency: 880), type: .microphone)
         try await Task.sleep(for: .milliseconds(17))
     }
+    // Each source must be analyzed independently, even when the system sample arrives first.
+    #expect(writer.microphoneSignal.sampledAt > 0)
+    #expect(writer.microphoneSignal.level > 0)
     await writer.stopRecording()
     let segments = writer.recentSegments(forReplayDuration: 10)
     #expect(segments.count >= 2)

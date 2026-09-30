@@ -44,7 +44,7 @@ final class GameOverlayController: ObservableObject {
         }
         if panel == nil {
             let panel = GameOverlayPanel()
-            panel.setContentSize(NSSize(width: 200, height: 300))
+            panel.setContentSize(NSSize(width: 244, height: 252))
             panel.isMovableByWindowBackground = false
             panel.hasShadow = false
             panel.contentView = NSHostingView(rootView: GameOverlayView(backend: backend, controller: self, dismiss: { [weak self] in self?.hide() }))
@@ -55,7 +55,7 @@ final class GameOverlayController: ObservableObject {
             (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == backend.settings.selectedDisplayID
         } ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         if let screen {
-            panel.setFrameOrigin(CGPoint(x: screen.frame.minX, y: screen.visibleFrame.maxY - panel.frame.height - 56))
+            panel.setFrameOrigin(Self.dockedOrigin(screenFrame: screen.frame, visibleFrame: screen.visibleFrame, panelSize: panel.frame.size))
         }
         // Never activate the app or make this panel key: the game keeps focus.
         dismissTask?.cancel()
@@ -64,12 +64,16 @@ final class GameOverlayController: ObservableObject {
         isVisible = true
     }
 
+    static func dockedOrigin(screenFrame: CGRect, visibleFrame: CGRect, panelSize: CGSize) -> CGPoint {
+        CGPoint(x: screenFrame.minX, y: visibleFrame.maxY - panelSize.height)
+    }
+
     func hide() {
         isVisible = false
         panel?.ignoresMouseEvents = true
         dismissTask?.cancel()
         dismissTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(360)) } catch { return }
             guard let self, !isVisible else { return }
             panel?.orderOut(nil)
         }
@@ -100,108 +104,129 @@ final class GameOverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-private struct GameOverlayView: View {
+struct GameOverlayView: View {
     @ObservedObject var backend: CaptureBackend
     @ObservedObject var controller: GameOverlayController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var dismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "record.circle").foregroundStyle(CyberTheme.red)
-                Text("capturely").font(.system(size: 15, weight: .black)).fontWidth(.condensed)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("capturely").font(.system(size: 14, weight: .semibold))
                 Spacer()
-                Button(action: dismiss) { Image(systemName: "xmark").frame(width: 24, height: 24) }
+                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 24, height: 24) }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Hide overlay")
                     .help("Hide overlay · ⌥⌘O")
             }
-            Text(backend.status.isRecording ? "● LIVE" : "○ STANDBY")
-                .font(.caption.monospaced().bold())
-                .foregroundStyle(backend.status.isRecording ? CyberTheme.coral : CyberTheme.muted)
-            VStack(spacing: 10) {
+            HStack {
+                Text(backend.health.detectedAppName ?? "Replay buffer").lineLimit(1)
+                Spacer()
+                Text(isSaving ? "SAVING" : backend.status.isRecording ? "● LIVE" : "STANDBY")
+                    .foregroundStyle(backend.status.isRecording ? CyberTheme.coral : CyberTheme.muted)
+            }.font(.caption.weight(.medium))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("\(min(backend.settings.replayDurationSeconds, Int(max(0, backend.status.bufferDurationSeconds))))")
+                    .font(.system(size: 26, weight: .semibold, design: .rounded)).monospacedDigit()
+                Text("/ \(backend.settings.replayDurationSeconds)s buffered")
+                    .font(.caption).foregroundStyle(CyberTheme.muted)
+            }
+            ProgressView(value: min(max(backend.status.bufferDurationSeconds / Double(max(backend.settings.replayDurationSeconds, 1)), 0), 1))
+                .tint(CyberTheme.red).accessibilityLabel("Replay buffer")
                 Button(action: backend.saveClipRequested) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Save replay")
+                    HStack {
+                        Text(isSaving ? "Saving replay…" : "Save replay")
+                        Spacer()
                         Text(backend.settings.saveClipHotkey.compactDisplayValue).font(.caption.monospaced())
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(CyberButtonStyle(tone: .primary, isEnabled: backend.status.canSaveClip))
                 .disabled(!backend.status.canSaveClip)
-                Button {
-                    if backend.status.isRecording { backend.stopCaptureRequested() }
-                    else { backend.startCaptureRequested() }
-                } label: {
-                    Label(backend.status.isRecording ? "Stop capture" : "Start capture", systemImage: backend.status.isRecording ? "stop.fill" : "record.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(CyberButtonStyle(tone: backend.status.isRecording ? .danger : .secondary))
-                .accessibilityLabel(backend.status.isRecording ? "Stop capture" : "Start capture")
-            }
             HStack(spacing: 6) {
-                ForEach([15, 30, 60], id: \.self) { seconds in
+                ForEach(Self.replayDurations(limit: backend.settings.replayDurationSeconds), id: \.self) { seconds in
                     Button("\(seconds)s") { backend.saveReplay(seconds: seconds) }
-                        .buttonStyle(.plain).foregroundStyle(CyberTheme.red)
+                        .buttonStyle(.plain).foregroundStyle(CyberTheme.text)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(CyberTheme.panelRaised, in: RoundedRectangle(cornerRadius: 8))
                         .disabled(!backend.status.canSaveClip)
                         .help("Save up to the last \(seconds) seconds")
+                        .accessibilityLabel("Save last \(seconds) seconds")
                 }
             }
             .font(.system(size: 10, weight: .medium, design: .monospaced))
             .foregroundStyle(CyberTheme.muted)
-            Text(backend.status.isRecording ? backend.status.bufferLengthDescription : "Not recording")
-                .font(.caption.monospaced()).foregroundStyle(CyberTheme.muted)
-            Text("⌥⌘O").font(.caption.monospaced()).foregroundStyle(CyberTheme.red)
+            HStack {
+                Button {
+                    if backend.status.isRecording || isSaving { backend.stopCaptureRequested() }
+                    else { backend.startCaptureRequested() }
+                } label: {
+                    Label(backend.status.isRecording || isSaving ? "Stop" : "Start", systemImage: backend.status.isRecording || isSaving ? "stop.fill" : "play.fill")
+                        .font(.system(size: 11, weight: .medium)).frame(minHeight: 28)
+                }
+                .buttonStyle(.plain).disabled(isSaving)
+                .accessibilityLabel(backend.status.isRecording || isSaving ? "Stop capture" : "Start capture")
+                Spacer()
+                Text(overlayHint).font(.system(size: 10, design: .monospaced)).foregroundStyle(CyberTheme.muted)
+            }
             Spacer(minLength: 0)
         }
         .padding(14)
-        .frame(width: 200, height: 300)
+        .frame(width: 244, height: 252)
         .foregroundStyle(CyberTheme.text)
-        .background(.black)
-        .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: 32))
+        .background(CyberTheme.panel.opacity(0.97))
+        .clipShape(dockedShape)
         .overlay {
-            UnevenRoundedRectangle(bottomTrailingRadius: 32)
-                .strokeBorder(CyberTheme.red.opacity(0.65), lineWidth: 1)
-                .opacity(controller.isVisible ? 1 : 0)
-                .animation(.easeOut(duration: 0.24).delay(controller.isVisible && !reduceMotion ? 0.22 : 0), value: controller.isVisible)
+            dockedShape
+                .strokeBorder(CyberTheme.text.opacity(0.14), lineWidth: 1)
                 .allowsHitTesting(false)
         }
-        .mask {
-            OverlayLiquidReveal(progress: controller.isVisible ? 1 : 0, reducedMotion: reduceMotion)
-                .animation(reduceMotion ? .easeOut(duration: 0.12) : .timingCurve(0.22, 0.8, 0.2, 1, duration: 0.56), value: controller.isVisible)
+        .overlay(alignment: .trailing) {
+            Capsule().fill(LinearGradient(colors: [CyberTheme.cyan, CyberTheme.red], startPoint: .top, endPoint: .bottom))
+                .frame(width: 2, height: 210)
+                .padding(.trailing, 1)
+                .allowsHitTesting(false).accessibilityHidden(true)
         }
-        .preferredColorScheme(.dark)
+        .overlay {
+            if !reduceMotion {
+                Rectangle().fill(LinearGradient(colors: [.clear, CyberTheme.cyan.opacity(0.22), .clear], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: 70).rotationEffect(.degrees(18))
+                    .keyframeAnimator(initialValue: CGFloat(-180), trigger: controller.isVisible) { view, position in
+                        view.offset(x: position)
+                    } keyframes: { _ in
+                        LinearKeyframe(-180, duration: 0.08)
+                        CubicKeyframe(360, duration: 0.62)
+                    }
+                    .opacity(controller.isVisible ? 1 : 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(dockedShape).allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
+        .mask(alignment: .topLeading) {
+            Rectangle()
+                .frame(height: controller.isVisible || reduceMotion ? 252 : 45)
+                .animation(reduceMotion ? nil : .smooth(duration: 0.22, extraBounce: 0), value: controller.isVisible)
+        }
+        .opacity(controller.isVisible ? 1 : 0)
+        .animation(.easeOut(duration: 0.12).delay(controller.isVisible || reduceMotion ? 0 : 0.22), value: controller.isVisible)
+        .preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
+    }
+
+    private var dockedShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 18, topTrailingRadius: 18)
     }
 
     private var overlayHint: String {
         if case .saving = backend.recordingState { return "Saving…" }
         return "⌥⌘O to hide"
     }
-}
 
-private struct OverlayLiquidReveal: Shape {
-    var progress: CGFloat
-    var reducedMotion: Bool
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
+    private var isSaving: Bool {
+        if case .savingClip = backend.status.captureState { return true }
+        return false
     }
 
-    func path(in rect: CGRect) -> Path {
-        let p = min(max(progress, 0), 1)
-        guard p > 0 else { return Path() }
-        if reducedMotion { return Path(CGRect(x: 0, y: 0, width: rect.width * p, height: rect.height)) }
-        // Reveal horizontally from the display edge; controls remain undistorted.
-        let crest = sin(p * .pi) * 70
-        let edge = p * (rect.width + 70)
-        var path = Path()
-        path.move(to: .zero)
-        path.addLine(to: CGPoint(x: edge, y: 0))
-        path.addCurve(to: CGPoint(x: edge - crest, y: rect.height),
-                      control1: CGPoint(x: edge + crest * 0.45, y: rect.height * 0.3),
-                      control2: CGPoint(x: edge - crest * 1.4, y: rect.height * 0.72))
-        path.addLine(to: CGPoint(x: 0, y: rect.height))
-        path.closeSubpath()
-        return path
+    static func replayDurations(limit: Int) -> [Int] {
+        Array(Set([15, 30, 60].filter { $0 < limit } + [limit].filter { $0 > 0 })).sorted()
     }
 }

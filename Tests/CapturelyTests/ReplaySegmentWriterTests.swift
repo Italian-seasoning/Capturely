@@ -3,6 +3,65 @@ import AVFoundation
 import Testing
 @testable import Capturely
 
+@Test func replaySegmentKeepsStableAudioSourceOrderAndGains() {
+    let sources = [
+        AudioSourceDescriptor.application(displayName: "Roblox", bundleIdentifier: "com.roblox.RobloxPlayer", gain: 0.8),
+        AudioSourceDescriptor.application(displayName: "Chrome", bundleIdentifier: "com.google.Chrome", gain: 0.6),
+        AudioSourceDescriptor.microphone(deviceID: "mic-1", gain: 0.4)
+    ]
+    let segment = ReplaySegment(
+        url: URL(fileURLWithPath: "/tmp/segment.mov"),
+        startedAt: Date(),
+        durationSeconds: 20,
+        audioSources: sources
+    )
+
+    #expect(segment.audioSources.map(\.id) == sources.map(\.id))
+    #expect(segment.audioGains == [0.8, 0.6, 0.4])
+}
+
+@Test func capturePresetMapsCurrentSystemAndMicrophoneAudioInOrder() {
+    var preset = CapturePreset.balanced
+    preset.recordsSystemAudio = true
+    preset.recordsMicrophone = true
+    preset.audioGains = [0.75, 0.5]
+
+    #expect(preset.audioSources.map(\.kind) == [.system, .microphone])
+    #expect(preset.audioSources.map(\.gain) == [0.75, 0.5])
+}
+
+@Test func captureCoordinatorUsesFourIsolatedAppsAndMicrophoneInStableOrder() {
+    var preset = CapturePreset.balanced
+    preset.recordsMicrophone = true
+    preset.audioGains = [0.75, 0.5]
+    let applications = (1...5).map {
+        AudioSourceDescriptor.application(displayName: "App \($0)", bundleIdentifier: "com.example.app\($0)")
+    }
+
+    let sources = CaptureCoordinator.resolvedAudioSources(
+        preset: preset,
+        isolatedAudioSources: applications,
+        microphoneDeviceID: "mic-1"
+    )
+
+    #expect(sources.map(\.id) == applications.prefix(4).map(\.id) + ["microphone:mic-1"])
+    #expect(sources.last?.gain == 0.5)
+}
+
+@Test func captureCoordinatorDoesNotCaptureAppsWhenSystemAudioIsOff() {
+    var preset = CapturePreset.balanced
+    preset.recordsSystemAudio = false
+    preset.recordsMicrophone = true
+
+    let sources = CaptureCoordinator.resolvedAudioSources(
+        preset: preset,
+        isolatedAudioSources: [.application(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")],
+        microphoneDeviceID: nil
+    )
+
+    #expect(sources.map(\.kind) == [.microphone])
+}
+
 @MainActor
 @Test func replaySegmentWriterDeletesExpiredSegmentFiles() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

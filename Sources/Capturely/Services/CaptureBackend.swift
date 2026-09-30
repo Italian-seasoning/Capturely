@@ -20,6 +20,7 @@ final class CaptureBackend: ObservableObject {
     @Published private(set) var settings: AppSettings = .defaults
     @Published private(set) var displayOptions: [CaptureDisplayOption] = []
     @Published private(set) var microphoneOptions: [MicrophoneDeviceOption] = []
+    @Published private(set) var runningAudioApplications: [AudioSourceDescriptor] = []
     @Published private(set) var isCaptureConfigurationLocked = false
     @Published var isDebugVisible = false
     @Published private(set) var resourceUsage = ResourceUsage.empty
@@ -29,6 +30,8 @@ final class CaptureBackend: ObservableObject {
     private var resourceSampler = ResourceSampler()
     private let gameProcessLogger = GameProcessLogger()
     @Published private(set) var gameProcessSample = GameProcessSample()
+    @Published private(set) var microphoneLevel: Double = 0
+    private var reactionDetector = ReactionClipDetector()
     private var suppressedGamePID: pid_t?
 
     private let appPaths: AppPaths
@@ -85,11 +88,15 @@ final class CaptureBackend: ObservableObject {
                 self?.updateHealthOnly(lastError: self?.lastError)
             }
         }
+        replayWriter.onMicrophoneLevelUpdated = { [weak self] in
+            Task { @MainActor in self?.updateHealthOnly(lastError: self?.lastError) }
+        }
     }
 
     func start() async {
         guard !hasStarted else { return }
         hasStarted = true
+        DiscordPresenceBridge.shared.start()
 
         do {
             settings = try appSettingsStore.load()
@@ -125,9 +132,16 @@ final class CaptureBackend: ObservableObject {
     }
 
     func saveReplay(seconds: Int) {
-        guard [15, 30, 60].contains(seconds) else { return }
+        guard seconds > 0, seconds <= max(60, settings.replayDurationSeconds) else { return }
         Task { await saveClip(duration: seconds) }
     }
+
+    func setReactionClippingEnabled(_ enabled: Bool) {
+        updateSettings { $0.reactionClippingEnabled = enabled }
+        reactionDetector = ReactionClipDetector()
+    }
+    func setReactionThreshold(_ value: Double) { updateSettings { $0.reactionThreshold = min(1, max(0.05, value)) } }
+    func setReactionCooldown(_ value: Double) { updateSettings { $0.reactionCooldownSeconds = min(300, max(10, value)) } }
 
     func setAutomaticGameSessions(_ enabled: Bool) {
         settings.automaticGameSessions = enabled
@@ -190,6 +204,7 @@ final class CaptureBackend: ObservableObject {
         guard canChangeCaptureConfiguration() else { return }
         displayOptions = await DisplayScanner().scanDisplays()
         microphoneOptions = Self.microphoneDeviceOptions()
+        runningAudioApplications = Self.runningAudioSources()
         if settings.selectedDisplayID == nil {
             settings.selectedDisplayID = displayOptions.first?.displayID
             scheduleSettingsSave()
@@ -296,6 +311,16 @@ final class CaptureBackend: ObservableObject {
         updateSettings { $0.microphoneDeviceID = id }
     }
 
+    func addIsolatedAudioSource(_ source: AudioSourceDescriptor) {
+        updateSettings {
+            $0.isolatedAudioSources = AppSettings.normalizedIsolatedAudioSources($0.isolatedAudioSources + [source])
+        }
+    }
+
+    func removeIsolatedAudioSource(_ source: AudioSourceDescriptor) {
+        updateSettings { $0.isolatedAudioSources.removeAll { $0.id == source.id } }
+    }
+
     func chooseClipLibrary() {
         guard canChangeCaptureConfiguration() else { return }
         let panel = NSOpenPanel()
@@ -397,29 +422,35 @@ final class CaptureBackend: ObservableObject {
         NSWorkspace.shared.open(clip.clipURL)
     }
 
-    func export(_ clip: Clip) {
+    func export(_ clip: Clip, preset: ClipExportPreset = .original) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.quickTimeMovie]
-        panel.nameFieldStringValue = "\(clip.sourceAppName ?? clip.gameName)-\(Self.fileTimestamp.string(from: clip.capturedAt)).mov"
+        panel.nameFieldStringValue = "\(clip.sourceAppName ?? clip.gameName)-\(Self.fileTimestamp.string(from: clip.capturedAt))-\(preset.filenameSuffix).mov"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+        Task {
+            guard !isLibraryBusy, !isSaveInProgress else { return }
+            isLibraryBusy = true
+            defer { isLibraryBusy = false }
+            do {
+                try await ClipExporter().export(source: clip.clipURL, destination: url, preset: preset)
+                libraryMessage = "Exported \(preset.displayName) copy."
+                share(url)
+            } catch {
+                libraryMessage = error.localizedDescription
             }
-            try FileManager.default.copyItem(at: clip.clipURL, to: url)
-            gameRegistryMessage = "Exported \(clip.gameName)"
-        } catch {
-            lastError = error.localizedDescription
-            updateDerivedState()
         }
     }
 
     func share(_ clip: Clip) {
+        share(clip.clipURL)
+    }
+
+    private func share(_ url: URL) {
         guard let view = NSApp.keyWindow?.contentView else {
-            reveal(clip)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
             return
         }
-        NSSharingServicePicker(items: [clip.clipURL]).show(relativeTo: .zero, of: view, preferredEdge: .minY)
+        NSSharingServicePicker(items: [url]).show(relativeTo: .zero, of: view, preferredEdge: .minY)
     }
 
     func delete(_ clip: Clip) {
@@ -437,6 +468,22 @@ final class CaptureBackend: ObservableObject {
             clips = updated
             libraryMessage = updated[index].isStarred == true ? "Starred clip protected from automatic cleanup." : "Clip unstarred."
         } catch { libraryMessage = error.localizedDescription }
+    }
+
+    func updateClipMetadata(_ clip: Clip, title: String?, tags: [String]) {
+        guard !isLibraryBusy, !isSaveInProgress else { return }
+        do {
+            clips = try clipIndexStore.updateMetadata(
+                for: clip,
+                in: clips,
+                title: title,
+                tags: tags
+            )
+            recentClips = clips.map(RecentClipDisplay.init(clip:))
+            libraryMessage = "Clip details updated."
+        } catch {
+            libraryMessage = error.localizedDescription
+        }
     }
 
     func saveEditedClip(_ source: Clip, start: Double, end: Double, gains: [Double]) async throws {
@@ -550,7 +597,8 @@ final class CaptureBackend: ObservableObject {
             preset: preset,
             sourceMode: settings.captureSourceMode,
             selectedDisplayID: settings.selectedDisplayID,
-            microphoneDeviceID: settings.microphoneDeviceID
+            microphoneDeviceID: settings.microphoneDeviceID,
+            isolatedAudioSources: settings.isolatedAudioSources
         )
         updateDerivedState(windowTitle: match.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
 
@@ -595,7 +643,8 @@ final class CaptureBackend: ObservableObject {
             preset: preset,
             sourceMode: .selectedDisplay,
             selectedDisplayID: settings.selectedDisplayID,
-            microphoneDeviceID: settings.microphoneDeviceID
+            microphoneDeviceID: settings.microphoneDeviceID,
+            isolatedAudioSources: settings.isolatedAudioSources
         )
 
         if captureCoordinator.state.isRecording {
@@ -739,6 +788,7 @@ final class CaptureBackend: ObservableObject {
     }
 
     private func updateDerivedState(windowTitle: String? = nil, isWindowLocked: Bool = false) {
+        DiscordPresenceBridge.shared.update(captureCoordinator.state)
         let metrics = captureCoordinator.replaySegmentWriter.healthMetrics
         let outputFolder = try? (settings.clipLibraryURL ?? appPaths.defaultClipLibraryDirectory)
         isCaptureConfigurationLocked = captureCoordinator.state.locksCaptureConfiguration
@@ -790,6 +840,14 @@ final class CaptureBackend: ObservableObject {
     }
 
     private func updateHealthOnly(lastError: String?) {
+        let signal = captureCoordinator.replaySegmentWriter.microphoneSignal
+        let now = ProcessInfo.processInfo.systemUptime
+        microphoneLevel = captureCoordinator.state.isRecording && now - signal.sampledAt < 1.5 ? signal.level : 0
+        if reactionDetector.shouldClip(level: signal.level, sampledAt: signal.sampledAt, now: now,
+            threshold: settings.reactionThreshold, cooldown: settings.reactionCooldownSeconds,
+            eligible: settings.reactionClippingEnabled && settings.recordsMicrophone && status.canSaveClip && !isLibraryBusy && !isSaveInProgress) {
+            saveClipRequested()
+        }
         let metrics = captureCoordinator.replaySegmentWriter.healthMetrics
         isCaptureConfigurationLocked = captureCoordinator.state.locksCaptureConfiguration
         health = CaptureHealthSnapshot(
@@ -847,7 +905,8 @@ final class CaptureBackend: ObservableObject {
             preset: runtimePreset(for: match.game),
             sourceMode: settings.captureSourceMode,
             selectedDisplayID: settings.selectedDisplayID,
-            microphoneDeviceID: settings.microphoneDeviceID
+            microphoneDeviceID: settings.microphoneDeviceID,
+            isolatedAudioSources: settings.isolatedAudioSources
         )
         updateDerivedState(windowTitle: match.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
     }
@@ -878,7 +937,8 @@ final class CaptureBackend: ObservableObject {
                 preset: runtimePreset(for: game),
                 sourceMode: .selectedDisplay,
                 selectedDisplayID: settings.selectedDisplayID,
-                microphoneDeviceID: settings.microphoneDeviceID
+                microphoneDeviceID: settings.microphoneDeviceID,
+                isolatedAudioSources: settings.isolatedAudioSources
             )
             updateDerivedState(windowTitle: match.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
             return true
@@ -891,7 +951,8 @@ final class CaptureBackend: ObservableObject {
             preset: runtimePreset(for: match.game),
             sourceMode: settings.captureSourceMode,
             selectedDisplayID: settings.selectedDisplayID,
-            microphoneDeviceID: settings.microphoneDeviceID
+            microphoneDeviceID: settings.microphoneDeviceID,
+            isolatedAudioSources: settings.isolatedAudioSources
         )
         updateDerivedState(windowTitle: match.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
         return true
@@ -1006,7 +1067,8 @@ final class CaptureBackend: ObservableObject {
             preset: runtimePreset(for: game),
             sourceMode: .selectedDisplay,
             selectedDisplayID: settings.selectedDisplayID,
-            microphoneDeviceID: settings.microphoneDeviceID
+            microphoneDeviceID: settings.microphoneDeviceID,
+            isolatedAudioSources: settings.isolatedAudioSources
         )
         updateDerivedState(windowTitle: match.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
     }
@@ -1086,6 +1148,21 @@ final class CaptureBackend: ObservableObject {
             return false
         }
         return true
+    }
+
+    nonisolated static func runningAudioSources(
+        applications: [NSRunningApplication] = NSWorkspace.shared.runningApplications
+    ) -> [AudioSourceDescriptor] {
+        var identifiers = Set<String>()
+        return applications.compactMap { application in
+            guard let bundleIdentifier = application.bundleIdentifier,
+                  bundleIdentifier != Bundle.main.bundleIdentifier,
+                  identifiers.insert(bundleIdentifier).inserted else { return nil }
+            return .application(
+                displayName: application.localizedName ?? bundleIdentifier,
+                bundleIdentifier: bundleIdentifier
+            )
+        }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     private func clipDestination(gameName: String, capturedAt: Date) throws -> ClipDestination {

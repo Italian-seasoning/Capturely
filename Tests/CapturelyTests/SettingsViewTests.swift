@@ -2,6 +2,32 @@ import Foundation
 import Testing
 @testable import Capturely
 
+@Test func legacySettingsDecodeWithNoIsolatedAudioSources() throws {
+    let settings = try JSONDecoder.capturely.decode(AppSettings.self, from: Data("{}".utf8))
+
+    #expect(settings.isolatedAudioSources.isEmpty)
+}
+
+@Test func settingsNormalizeIsolatedAudioSources() throws {
+    let sources = [
+        AudioSourceDescriptor.application(displayName: "Roblox", bundleIdentifier: "com.roblox.RobloxPlayer"),
+        AudioSourceDescriptor.application(displayName: "Roblox duplicate", bundleIdentifier: "com.roblox.RobloxPlayer"),
+        AudioSourceDescriptor.application(displayName: "Chrome", bundleIdentifier: "com.google.Chrome"),
+        AudioSourceDescriptor.application(displayName: "Music", bundleIdentifier: "com.apple.Music"),
+        AudioSourceDescriptor.application(displayName: "Discord", bundleIdentifier: "com.hnc.Discord"),
+        AudioSourceDescriptor.application(displayName: "Extra", bundleIdentifier: "com.example.Extra")
+    ]
+    let json = try JSONEncoder.capturely.encode(["isolatedAudioSources": sources])
+    let settings = try JSONDecoder.capturely.decode(AppSettings.self, from: json)
+
+    #expect(settings.isolatedAudioSources.map(\.bundleIdentifier) == [
+        "com.roblox.RobloxPlayer",
+        "com.google.Chrome",
+        "com.apple.Music",
+        "com.hnc.Discord"
+    ])
+}
+
 @MainActor
 @Test func settingsViewBindingsCallConfiguredActions() {
     var selectedPresetID: CapturePreset.ID?

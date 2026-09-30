@@ -43,6 +43,13 @@ struct ClipEditor {
         return mix
     }
 
+    static func effectiveGains(gains: [Double], muted: Set<Int>, soloed: Set<Int>) -> [Double] {
+        gains.indices.map { index in
+            guard !muted.contains(index), soloed.isEmpty || soloed.contains(index) else { return 0 }
+            return gains[index]
+        }
+    }
+
     static func export(source: URL, output: URL, start: Double, end: Double, gains: [Double]) async throws {
         try await Task.detached(priority: .utility) {
             let asset = try await composition(from: AVURLAsset(url: source))
@@ -69,6 +76,8 @@ struct ClipEditorView: View {
     @State private var start = 0.0
     @State private var end = 0.0
     @State private var gains: [Double] = []
+    @State private var muted: Set<Int> = []
+    @State private var soloed: Set<Int> = []
     @State private var tracks: [AVAssetTrack] = []
     @State private var busy = false
     @State private var error: String?
@@ -94,13 +103,21 @@ struct ClipEditorView: View {
                 }.buttonStyle(CyberButtonStyle())
                 ForEach(gains.indices, id: \.self) { index in
                     HStack {
-                        Text(audioLabel(index)).frame(width: 100, alignment: .leading)
+                        Text(audioLabel(index)).frame(width: 120, alignment: .leading)
+                        Button("M") { toggle(index, in: &muted) }
+                            .buttonStyle(.borderedProminent)
+                            .tint(muted.contains(index) ? CyberTheme.coral : CyberTheme.panelRaised)
+                            .help("Mute \(audioLabel(index))")
+                        Button("S") { toggle(index, in: &soloed) }
+                            .buttonStyle(.borderedProminent)
+                            .tint(soloed.contains(index) ? CyberTheme.red : CyberTheme.panelRaised)
+                            .help("Solo \(audioLabel(index))")
                         Slider(value: $gains[index], in: 0...1.5)
                             .accessibilityLabel(audioLabel(index))
                         Text("\(Int(gains[index] * 100))%").monospacedDigit().frame(width: 42)
                     }
                 }
-                Text(clip.editableSourceURL == nil ? "Original audio is already mixed. New dual-source recordings can keep game and mic separate." : "Game and microphone are separate. Adjust either track before saving.")
+                Text(clip.editableSourceURL == nil ? "Original audio is already mixed." : "Each captured app and microphone has its own mute, solo, and gain control.")
                     .font(.caption).foregroundStyle(CyberTheme.muted)
             }
             if let error { Text(error).foregroundStyle(CyberTheme.coral).font(.caption).textSelection(.enabled) }
@@ -112,7 +129,7 @@ struct ClipEditorView: View {
                     busy = true
                     player.pause()
                     Task {
-                        do { try await save(start, end, gains); dismiss() }
+                        do { try await save(start, end, effectiveGains); dismiss() }
                         catch { self.error = error.localizedDescription }
                         busy = false
                     }
@@ -121,7 +138,7 @@ struct ClipEditorView: View {
             }
         }
         .padding(22).frame(width: 640).background(CyberTheme.void)
-        .foregroundStyle(CyberTheme.text).preferredColorScheme(.dark)
+        .foregroundStyle(CyberTheme.text).preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .interactiveDismissDisabled(busy)
         .task {
             do {
@@ -137,7 +154,9 @@ struct ClipEditorView: View {
                 player.replaceCurrentItem(with: item)
             } catch { self.error = error.localizedDescription }
         }
-        .onChange(of: gains) { _, _ in player.currentItem?.audioMix = ClipEditor.audioMix(tracks: tracks, gains: gains) }
+        .onChange(of: gains) { _, _ in updatePreviewMix() }
+        .onChange(of: muted) { _, _ in updatePreviewMix() }
+        .onChange(of: soloed) { _, _ in updatePreviewMix() }
         .onDisappear { player.pause(); player.replaceCurrentItem(with: nil) }
     }
 
@@ -147,6 +166,18 @@ struct ClipEditorView: View {
     }
 
     private func audioLabel(_ index: Int) -> String {
-        clip.editableSourceURL != nil && tracks.count == 2 ? (index == 0 ? "Game audio" : "Microphone") : "Audio \(index + 1)"
+        clip.audioTracks.first(where: { $0.trackIndex == index })?.source.displayName ?? "Audio \(index + 1)"
+    }
+
+    private var effectiveGains: [Double] {
+        ClipEditor.effectiveGains(gains: gains, muted: muted, soloed: soloed)
+    }
+
+    private func toggle(_ index: Int, in set: inout Set<Int>) {
+        if set.contains(index) { set.remove(index) } else { set.insert(index) }
+    }
+
+    private func updatePreviewMix() {
+        player.currentItem?.audioMix = ClipEditor.audioMix(tracks: tracks, gains: effectiveGains)
     }
 }

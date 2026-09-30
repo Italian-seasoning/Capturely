@@ -154,7 +154,7 @@ import Testing
     #expect(CapturelyWindowMetrics.minimumContentHeight == 560)
     #expect(CapturelyWindowMetrics.idealContentWidth > CapturelyWindowMetrics.minimumContentWidth)
     #expect(CapturelyWindowMetrics.idealContentHeight > CapturelyWindowMetrics.minimumContentHeight)
-    #expect(CapturelyWindowMetrics.sidebarIdealWidth == 64)
+    #expect(CapturelyWindowMetrics.sidebarIdealWidth == 72)
 }
 
 @Test func scanlineRendererUsesOneRowEveryFivePoints() {
@@ -168,7 +168,7 @@ import Testing
     #expect(!QuickSettingDisplay.compactDefaults.map(\.label).contains("Detected Game"))
 }
 
-@Test func compactQuickSettingTilesUseAudioHealth() {
+@MainActor @Test func compactQuickSettingTilesUseAudioHealth() {
     let health = CaptureHealthSnapshot(
         detectedAppName: "ROBLOX",
         captureState: .recording,
@@ -210,7 +210,7 @@ import Testing
     #expect(audio?.audioLevels == [0.2, 0.5])
 }
 
-@Test func compactQuickSettingTilesShowPerformanceModeForStorageSaver() {
+@MainActor @Test func compactQuickSettingTilesShowPerformanceModeForStorageSaver() {
     let settings = AppSettings(
         selectedPresetID: CapturePreset.storageSaver.id,
         clipLibraryURL: nil,

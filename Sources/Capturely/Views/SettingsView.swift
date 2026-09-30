@@ -1,10 +1,12 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @ObservedObject private var presence = DiscordPresenceBridge.shared
     var settings: AppSettings = .defaults
     var permissionSummary: PermissionSummary = PermissionSummary(microphoneGranted: false, screenCaptureStatus: "Not checked")
     var displayOptions: [CaptureDisplayOption] = []
     var microphoneOptions: [MicrophoneDeviceOption] = []
+    var runningAudioApplications: [AudioSourceDescriptor] = []
     var isLocked: Bool = false
     var games: [Game] = []
     var scannedApplications: [Game] = []
@@ -20,6 +22,8 @@ struct SettingsView: View {
     var setCustomPreset: (CustomCapturePresetSettings) -> Void = { _ in }
     var setSystemAudioMix: (Double) -> Void = { _ in }
     var setMicrophoneMix: (Double) -> Void = { _ in }
+    var addIsolatedAudioSource: (AudioSourceDescriptor) -> Void = { _ in }
+    var removeIsolatedAudioSource: (AudioSourceDescriptor) -> Void = { _ in }
     var requestScreenCapturePermission: () -> Void = {}
     var chooseClipLibrary: () -> Void = {}
     var resetClipLibrary: () -> Void = {}
@@ -33,23 +37,32 @@ struct SettingsView: View {
     var setKeepsEditableAudio: (Bool) -> Void = { _ in }
     var setLibraryLimitGB: (Int) -> Void = { _ in }
     var setLogsGameProcess: (Bool) -> Void = { _ in }
+    var microphoneLevel: Double = 0
+    var setReactionClippingEnabled: (Bool) -> Void = { _ in }
+    var setReactionThreshold: (Double) -> Void = { _ in }
+    var setReactionCooldown: (Double) -> Void = { _ in }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("03 / SETTINGS")
+                    Text("SETTINGS")
                         .font(.caption.monospaced().weight(.bold))
                         .tracking(2)
                         .foregroundStyle(CyberTheme.red)
                     Text("Make it yours.")
-                        .font(.system(size: 36, weight: .black))
-                        .fontWidth(.condensed)
-                        .tracking(-1.5)
+                        .font(.system(size: 28, weight: .semibold))
+                        .tracking(-0.6)
                 }
                 .padding(.bottom, 6)
 
                 CyberSettingsSection(title: "Theme") {
+                    Picker("Palette", selection: Binding(get: { ThemePreferences.shared.palette }, set: { ThemePreferences.shared.selectPalette($0) })) {
+                        Text("Daylight · White / Red / Ice blue").tag("daylight")
+                        Text("Harbor · Navy / Pink / Ice blue").tag("harbor")
+                        Text("Neon · Graphite / Cyan / Violet").tag("neon")
+                        Text("Graphite · Custom accent").tag("graphite")
+                    }
                     ColorPicker("Accent color", selection: Binding(get: { ThemePreferences.shared.color }, set: { ThemePreferences.shared.color = $0 }), supportsOpacity: false)
                     HStack(spacing: 12) {
                         ForEach([0xFF995C, 0x75D9FF, 0xC5A0FF, 0xFF80B5, 0xE0FA4D], id: \.self) { rgb in
@@ -69,6 +82,22 @@ struct SettingsView: View {
                 }
 
                 CyberSettingsSection(title: "Replay Workflow") {
+                    Toggle("Discord Rich Presence", isOn: $presence.enabled)
+                    Text(presence.status).font(.caption).foregroundStyle(CyberTheme.muted)
+                    Text("Requires the EnhancedPresence Vencord plugin. Shares recording status only; window titles and filenames stay local.")
+                        .font(.caption).foregroundStyle(CyberTheme.muted)
+                    Toggle("Clip loud microphone reactions", isOn: Binding(get: { settings.reactionClippingEnabled }, set: { setReactionClippingEnabled($0) }))
+                    Text("Saves the current replay when your mic crosses the threshold. Enable microphone recording and start capture to monitor it.")
+                        .font(.caption).foregroundStyle(CyberTheme.muted)
+                    ProgressView("Microphone input", value: microphoneLevel).tint(CyberTheme.cyan)
+                    HStack {
+                        Text("Reaction threshold")
+                        Slider(value: Binding(get: { settings.reactionThreshold }, set: { setReactionThreshold($0) }), in: 0.05...1)
+                        Text("\(Int(settings.reactionThreshold * 100))%").monospacedDigit().frame(width: 42)
+                    }
+                    Picker("Reaction cooldown", selection: Binding(get: { settings.reactionCooldownSeconds }, set: { setReactionCooldown($0) })) {
+                        ForEach([10.0, 30, 60, 120], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
+                    }
                     Toggle("Log game process while capturing", isOn: Binding(get: { settings.logsGameProcess }, set: setLogsGameProcess))
                     Text("Local CSV: game CPU, memory, traffic and capture health every 2s, with samples beside clips. Traffic is not ping; unavailable counters stay blank. Session logs cap at 10 MB.").font(.caption).foregroundStyle(CyberTheme.muted)
                     Toggle("Automatic game sessions", isOn: Binding(get: { settings.automaticGameSessions }, set: setAutomaticGameSessions))
@@ -212,6 +241,48 @@ struct SettingsView: View {
                             .font(.caption.weight(.semibold).monospaced())
                             .foregroundStyle(CyberTheme.muted)
                     CyberSlider(value: microphoneMixBinding, range: 0...1.5, isEnabled: !isLocked && settings.recordsMicrophone)
+                }
+
+                Divider().overlay(CyberTheme.dim)
+                HStack {
+                    Text("ISOLATED APP TRACKS")
+                        .font(.caption.weight(.bold).monospaced())
+                        .foregroundStyle(CyberTheme.muted)
+                    Spacer()
+                    Menu("Add Running App") {
+                        ForEach(availableAudioApplications) { source in
+                            Button(source.displayName) { addIsolatedAudioSource(source) }
+                        }
+                        if availableAudioApplications.isEmpty {
+                            Text(settings.isolatedAudioSources.count >= 4 ? "Four app tracks selected" : "No new running apps")
+                        }
+                    }
+                    .disabled(isLocked || !settings.recordsSystemAudio || settings.isolatedAudioSources.count >= 4)
+                }
+
+                if settings.isolatedAudioSources.isEmpty {
+                    Text("Add running apps to record each one on its own track. With none selected, Capturely records the normal system mix.")
+                        .font(.caption)
+                        .foregroundStyle(CyberTheme.muted)
+                } else {
+                    ForEach(settings.isolatedAudioSources) { source in
+                        HStack {
+                            Image(systemName: "waveform")
+                            Text(source.displayName)
+                            Spacer()
+                            Button {
+                                removeIsolatedAudioSource(source)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isLocked)
+                            .accessibilityLabel("Remove \(source.displayName) audio track")
+                        }
+                    }
+                    Text("Only these apps are captured from system audio. The microphone remains a separate track.")
+                        .font(.caption)
+                        .foregroundStyle(CyberTheme.muted)
                 }
 
                     CyberInfoRow(label: "Microphone Permission", value: permissionSummary.microphoneGranted ? "Granted" : "Not granted")
@@ -402,6 +473,11 @@ struct SettingsView: View {
             get: { settings.microphoneMix },
             set: { setMicrophoneMix($0) }
         )
+    }
+
+    private var availableAudioApplications: [AudioSourceDescriptor] {
+        let selected = Set(settings.isolatedAudioSources.map(\.id))
+        return runningAudioApplications.filter { !selected.contains($0.id) }
     }
 
     private static func percent(_ value: Double) -> String {

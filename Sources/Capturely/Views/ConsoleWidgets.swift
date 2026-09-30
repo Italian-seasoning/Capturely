@@ -5,6 +5,14 @@ import Observation
 @MainActor @Observable
 final class ThemePreferences {
     static let shared = ThemePreferences()
+    var palette: String = UserDefaults.standard.string(forKey: "themePalette") ?? "graphite" {
+        didSet { UserDefaults.standard.set(palette, forKey: "themePalette") }
+    }
+    var isLight: Bool { palette == "daylight" }
+    func selectPalette(_ value: String) {
+        palette = value
+        rgb = value == "daylight" ? 0xC92F48 : value == "harbor" ? 0xFF4B98 : value == "neon" ? 0x00E5DB : 0xFF995C
+    }
     var rgb: Int = UserDefaults.standard.object(forKey: "themeAccentRGB") as? Int ?? 0xFF995C {
         didSet { UserDefaults.standard.set(rgb, forKey: "themeAccentRGB") }
     }
@@ -19,19 +27,24 @@ final class ThemePreferences {
     }
 }
 
+@MainActor
 enum CyberTheme {
-    static let void = Color(red: 0.055, green: 0.058, blue: 0.055)
-    static let panel = Color(red: 0.09, green: 0.095, blue: 0.09)
-    static let panelRaised = Color(red: 0.13, green: 0.14, blue: 0.12)
+    private static func color(_ value: Int) -> Color {
+        Color(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255, blue: Double(value & 255) / 255)
+    }
+    static var void: Color { color(ThemePreferences.shared.isLight ? 0xF3F8FC : ThemePreferences.shared.palette == "harbor" ? 0x071D32 : 0x0E0E12) }
+    static var panel: Color { color(ThemePreferences.shared.isLight ? 0xFFFFFF : ThemePreferences.shared.palette == "harbor" ? 0x0D2A40 : 0x18181E) }
+    static var panelRaised: Color { color(ThemePreferences.shared.isLight ? 0xE6F2FA : ThemePreferences.shared.palette == "harbor" ? 0x15384F : 0x24242D) }
     @MainActor static var red: Color { ThemePreferences.shared.color }
     @MainActor static var deepRed: Color { red.opacity(0.3) }
-    static let text = Color(red: 0.95, green: 0.95, blue: 0.88)
-    static let muted = Color(red: 0.66, green: 0.69, blue: 0.61)
-    static let dim = Color(red: 0.41, green: 0.44, blue: 0.38)
+    static var text: Color { color(ThemePreferences.shared.isLight ? 0x182C40 : 0xF2F5FA) }
+    static var muted: Color { color(ThemePreferences.shared.isLight ? 0x506479 : 0xABB8C9) }
+    static var dim: Color { color(ThemePreferences.shared.isLight ? 0x64788A : 0x6B7686) }
+    static var onAccent: Color { ThemePreferences.shared.isLight ? .white : void }
     static let coral = Color(red: 1.0, green: 0.40, blue: 0.31)
     static let warning = Color(red: 1.0, green: 0.74, blue: 0.18)
     static let success = Color(red: 0.31, green: 0.9, blue: 0.48)
-    static let cyan = Color(red: 0.70, green: 0.76, blue: 0.57)
+    static var cyan: Color { color(ThemePreferences.shared.isLight ? 0x2879A5 : ThemePreferences.shared.palette == "neon" ? 0xA46BFF : 0x93DEFF) }
     static let shadow = Color(red: 0.0, green: 0.0, blue: 0.0)
 }
 
@@ -153,7 +166,7 @@ struct CyberButtonStyle: ButtonStyle {
     }
 
     private var foreground: Color {
-        tone == .primary ? CyberTheme.void : (tone == .ghost ? CyberTheme.muted : CyberTheme.text)
+        tone == .primary ? CyberTheme.onAccent : (tone == .ghost ? CyberTheme.muted : CyberTheme.text)
     }
 
     private var stroke: Color {

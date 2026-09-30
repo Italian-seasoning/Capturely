@@ -66,4 +66,18 @@ Capturely saves clips under:
 ~/Movies/Capturely/Clips/<Game>/<Date>/<Time>/
 ```
 
-Each saved clip folder contains `clip.mov` and `metadata.json`.
+Each saved clip folder contains `clip.mov` and `metadata.json`. When editable audio is enabled and more than one source is captured, it also contains `editable-source.mov` with ordered app and microphone tracks.
+
+The library supports search, game/star/date filters, clip titles, tags, native sharing, and Original/1080p/720p exports. In Settings, add up to four running apps under Isolated App Tracks; Capturely records those apps separately instead of the broad system mix, while keeping the microphone on its own track. The clip editor provides mute, solo, and gain controls for each preserved track.
+
+## Appearance and reaction clips
+
+Choose Daylight (white, red, and ice blue), Harbor, Neon, or Graphite in Settings. The compact in-game overlay opens from the top-left and collapses in height before fading, with a light sweep and support for Reduce Motion.
+
+Automatic reaction clipping uses the microphone level, a configurable threshold, and a cooldown. It requires microphone permission, an enabled microphone, and a running replay buffer. The microphone meter in Settings shows the input level.
+
+## Discord Rich Presence
+
+Enable the local presence bridge in Capturely Settings. The opt-in bridge serves capture activity on `127.0.0.1:48731`, without clip paths or window titles. The companion Vencord plugin is in [integrations/vencord/EnhancedPresence](integrations/vencord/EnhancedPresence). Copy that directory into a Vencord source checkout's `src/userplugins`, build Vencord, and enable EnhancedPresence. Enter your own Discord application ID in the plugin settings; presence remains unpublished until one is configured.
+
+This integration provides Capturely activity. The broader universal EnhancedPresence engine is not included.

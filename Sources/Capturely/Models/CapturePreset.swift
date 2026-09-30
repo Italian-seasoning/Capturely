@@ -25,6 +25,18 @@ struct CapturePreset: Codable, Identifiable, Equatable, Sendable {
     var recordsSystemAudio: Bool
     var audioGains: [Double]? = nil
 
+    var audioSources: [AudioSourceDescriptor] {
+        var gains = audioGains ?? []
+        var sources: [AudioSourceDescriptor] = []
+        if recordsSystemAudio {
+            sources.append(.system(gain: gains.isEmpty ? 1 : gains.removeFirst()))
+        }
+        if recordsMicrophone {
+            sources.append(.microphone(deviceID: nil, gain: gains.isEmpty ? 1 : gains.removeFirst()))
+        }
+        return sources
+    }
+
     var qualityScore: Double {
         switch kind {
         case .storageSaver:

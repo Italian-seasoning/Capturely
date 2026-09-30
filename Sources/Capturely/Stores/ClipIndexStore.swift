@@ -17,6 +17,32 @@ struct ClipIndexStore: Sendable {
         try data.write(to: fileURL, options: [.atomic])
     }
 
+    func updateMetadata(
+        for clip: Clip,
+        in clips: [Clip],
+        title: String?,
+        tags: [String]
+    ) throws -> [Clip] {
+        guard let index = clips.firstIndex(where: { $0.id == clip.id }) else { return clips }
+        let oldMetadata = try? Data(contentsOf: clip.metadataURL)
+        var updated = clips
+        updated[index].title = title
+        updated[index].tags = tags
+
+        do {
+            try JSONEncoder.capturely.encode(updated[index]).write(to: clip.metadataURL, options: [.atomic])
+            try save(updated)
+            return updated
+        } catch {
+            if let oldMetadata {
+                try? oldMetadata.write(to: clip.metadataURL, options: [.atomic])
+            } else {
+                try? FileManager.default.removeItem(at: clip.metadataURL)
+            }
+            throw error
+        }
+    }
+
     func loadAsync() async throws -> [Clip] {
         try await Task.detached(priority: .utility) {
             try load()

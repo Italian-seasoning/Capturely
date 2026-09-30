@@ -16,6 +16,7 @@ final class CaptureCoordinator: NSObject, ObservableObject {
     private let replayComposer: any ReplayComposing
     private let thumbnailGenerator: any ThumbnailGenerating
     private let sampleHandlerQueue = DispatchQueue(label: "capturely.stream.samples", qos: .utility)
+    private lazy var applicationAudioCapture = ApplicationAudioCapture(writer: replaySegmentWriter)
     private var stream: SCStream?
     private var isStarting = false
     private var generation = 0
@@ -35,7 +36,8 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         preset: CapturePreset,
         sourceMode: CaptureSourceMode = .selectedDisplay,
         selectedDisplayID: UInt32? = nil,
-        microphoneDeviceID: String? = nil
+        microphoneDeviceID: String? = nil,
+        isolatedAudioSources: [AudioSourceDescriptor] = []
     ) async {
         guard !isStarting, stream == nil else { return }
         isStarting = true
@@ -68,7 +70,14 @@ final class CaptureCoordinator: NSObject, ObservableObject {
             configuration.queueDepth = 2
             configuration.showsCursor = false
             configuration.pixelFormat = Self.streamPixelFormatForEncoding
-            configuration.capturesAudio = preset.recordsSystemAudio
+            let audioSources = Self.resolvedAudioSources(
+                preset: preset,
+                isolatedAudioSources: isolatedAudioSources,
+                microphoneDeviceID: microphoneDeviceID
+            )
+            let applicationSources = audioSources.filter { $0.kind == .application }
+            let capturesBroadSystemAudio = preset.recordsSystemAudio && applicationSources.isEmpty
+            configuration.capturesAudio = capturesBroadSystemAudio
             configuration.captureMicrophone = preset.recordsMicrophone
             configuration.sampleRate = 48_000
             configuration.channelCount = 2
@@ -77,18 +86,24 @@ final class CaptureCoordinator: NSObject, ObservableObject {
 
             let stream = SCStream(filter: resolvedSource.filter, configuration: configuration, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleHandlerQueue)
-            if preset.recordsSystemAudio {
+            if capturesBroadSystemAudio {
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleHandlerQueue)
             }
             if preset.recordsMicrophone {
                 try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleHandlerQueue)
             }
 
-            try replaySegmentWriter.startRecording(preset: preset)
+            try replaySegmentWriter.startRecording(preset: preset, audioSources: audioSources)
             self.stream = stream
             try await stream.startCapture()
             guard generation == startedGeneration else {
                 try? await stream.stopCapture()
+                return
+            }
+            applicationAudioCapture.onDiagnosticEvent = onDiagnosticEvent
+            await applicationAudioCapture.start(sources: applicationSources, selectedDisplayID: selectedDisplayID)
+            guard generation == startedGeneration else {
+                await applicationAudioCapture.stop()
                 return
             }
             state = .recording(game: match.game, preset: preset)
@@ -96,6 +111,7 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         } catch {
             guard generation == startedGeneration else { return }
             self.stream = nil
+            await applicationAudioCapture.stop()
             await replaySegmentWriter.stopRecording()
             state = .failed(message: error.localizedDescription)
             onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .saveFailed, message: "Capture failed: \(error.localizedDescription)"))
@@ -106,6 +122,7 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         generation += 1
         let stoppingStream = stream
         stream = nil
+        await applicationAudioCapture.stop()
         do {
             try await stoppingStream?.stopCapture()
             state = .idle
@@ -119,6 +136,7 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         generation += 1
         try? await stream?.stopCapture()
         stream = nil
+        await applicationAudioCapture.stop()
         await replaySegmentWriter.stopRecording()
         state = .permissionRequired(reason: reason)
     }
@@ -185,7 +203,6 @@ final class CaptureCoordinator: NSObject, ObservableObject {
             metadataURL: destination.metadataFile,
             thumbnailURL: destination.thumbnailFile
         )
-
         do {
             if keepsEditableAudio, selectedSegments.contains(where: { $0.audioGains.count > 1 }) {
                 let sourceURL = destination.folder.appendingPathComponent("editable-source.mov")
@@ -195,6 +212,9 @@ final class CaptureCoordinator: NSObject, ObservableObject {
                         targetDurationSeconds: requestedDurationSeconds, audioGain: 1)
                     guard Self.isValidClipOutput(sourceURL) else { throw CaptureCoordinatorError.invalidClipOutput }
                     clip.editableSourceURL = sourceURL
+                    clip.audioTracks = (selectedSegments.first?.audioSources ?? []).enumerated().map {
+                        ClipAudioTrack(trackIndex: $0.offset, source: $0.element)
+                    }
                 } catch {
                     try? FileManager.default.removeItem(at: sourceURL)
                     onDiagnosticEvent?(.init(kind: .editableAudioFailed, message: "Mixed video saved; editable audio source failed: \(error.localizedDescription)"))
@@ -298,6 +318,25 @@ extension CaptureCoordinator: SCStreamOutput {
 
     nonisolated static let streamPixelFormatForEncoding = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
+    nonisolated static func resolvedAudioSources(
+        preset: CapturePreset,
+        isolatedAudioSources: [AudioSourceDescriptor],
+        microphoneDeviceID: String?
+    ) -> [AudioSourceDescriptor] {
+        var sources = preset.recordsSystemAudio
+            ? Array(isolatedAudioSources.filter { $0.kind == .application }.prefix(4))
+            : []
+        if preset.recordsSystemAudio, sources.isEmpty,
+           let system = preset.audioSources.first(where: { $0.kind == .system }) {
+            sources.append(system)
+        }
+        if preset.recordsMicrophone,
+           let microphone = preset.audioSources.first(where: { $0.kind == .microphone }) {
+            sources.append(.microphone(deviceID: microphoneDeviceID, gain: microphone.gain))
+        }
+        return sources
+    }
+
     private nonisolated static let captureAspectWidthRatio = 16.0 / 9.0
 }
 
@@ -307,6 +346,7 @@ extension CaptureCoordinator: SCStreamDelegate {
         Task { @MainActor [weak self] in
             guard let self, self.stream === stoppedStream else { return }
             self.stream = nil
+            await self.applicationAudioCapture.stop()
             await self.replaySegmentWriter.stopRecording()
             self.state = .failed(message: error.localizedDescription)
             self.onDiagnosticEvent?(.init(kind: .saveFailed, message: "Capture stopped: \(error.localizedDescription)"))

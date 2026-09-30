@@ -18,7 +18,7 @@ struct ReplayComposer: ReplayComposing {
             try await composeOnWorker(
                 segments: preservesAudioTracks ? segments.map { segment in
                     var source = segment
-                    source.audioGains = []
+                    source.audioSources = []
                     return source
                 } : segments,
                 outputURL: outputURL,

@@ -11,7 +11,7 @@ enum CapturelyPage: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .recording:
-            return "record.circle"
+            return "viewfinder"
         case .library:
             return "film.stack"
         case .settings:
@@ -56,7 +56,7 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .onReceive(NotificationCenter.default.publisher(for: .capturelyOpenPageRequested)) { notification in
             if let page = notification.object as? CapturelyPage {
                 withAnimation(.smooth(duration: 0.18, extraBounce: 0)) {
@@ -69,16 +69,6 @@ struct ContentView: View {
     private var mainInterface: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                VStack(alignment: .center, spacing: 10) {
-                    Image(systemName: "record.circle")
-                        .font(.system(size: 24, weight: .light))
-                        .foregroundStyle(CyberTheme.red)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 8)
-                .padding(.top, 54)
-                .padding(.bottom, 20)
-
                 VStack(spacing: 4) {
                     ForEach(CapturelyPage.allCases) { page in
                         Button {
@@ -86,14 +76,13 @@ struct ContentView: View {
                                 selectedPage = page
                             }
                         } label: {
-                            Image(systemName: page.systemImage).font(.system(size: 24, weight: .light))
+                            Image(systemName: page.systemImage).font(.system(size: 20, weight: .regular))
                             .foregroundStyle(selectedPage == page ? CyberTheme.red : CyberTheme.muted)
                             .frame(width: 48, height: 48)
                             .background(selectedPage == page ? CyberTheme.red.opacity(0.08) : .clear)
                             .overlay(alignment: .leading) {
                                 if selectedPage == page {
                                     Rectangle().fill(CyberTheme.red).frame(width: 3, height: 34)
-                                        .shadow(color: CyberTheme.red.opacity(0.5), radius: 6)
                                         .matchedGeometryEffect(id: "selection", in: navigation)
                                 }
                             }
@@ -105,6 +94,7 @@ struct ContentView: View {
                     }
                 }
                 .padding(.horizontal, 8)
+                .padding(.top, 54)
 
                 Spacer(minLength: 0)
                 Button {
@@ -197,11 +187,12 @@ struct ContentView: View {
                 clips: backend.clips,
                 reveal: backend.reveal,
                 play: backend.play,
-                export: backend.export,
+                export: { backend.export($0, preset: $1) },
                 share: backend.share,
                 delete: backend.delete,
                 edit: { backend.editingClip = $0 },
                 toggleStar: backend.toggleStar,
+                updateMetadata: backend.updateClipMetadata,
                 isBusy: backend.isLibraryBusy
             )
         case .settings:
@@ -210,6 +201,7 @@ struct ContentView: View {
                 permissionSummary: backend.permissionSummary,
                 displayOptions: backend.displayOptions,
                 microphoneOptions: backend.microphoneOptions,
+                runningAudioApplications: backend.runningAudioApplications,
                 isLocked: backend.isCaptureConfigurationLocked,
                 games: backend.games,
                 scannedApplications: backend.scannedApplications,
@@ -225,6 +217,8 @@ struct ContentView: View {
                 setCustomPreset: backend.setCustomPreset,
                 setSystemAudioMix: backend.setSystemAudioMix,
                 setMicrophoneMix: backend.setMicrophoneMix,
+                addIsolatedAudioSource: backend.addIsolatedAudioSource,
+                removeIsolatedAudioSource: backend.removeIsolatedAudioSource,
                 requestScreenCapturePermission: backend.requestScreenCapturePermission,
                 chooseClipLibrary: backend.chooseClipLibrary,
                 resetClipLibrary: backend.resetClipLibrary,
@@ -239,7 +233,11 @@ struct ContentView: View {
                 setAutomaticGameSessions: backend.setAutomaticGameSessions,
                 setKeepsEditableAudio: backend.setKeepsEditableAudio,
                 setLibraryLimitGB: backend.setLibraryLimitGB,
-                setLogsGameProcess: backend.setLogsGameProcess
+                setLogsGameProcess: backend.setLogsGameProcess,
+                microphoneLevel: backend.microphoneLevel,
+                setReactionClippingEnabled: backend.setReactionClippingEnabled,
+                setReactionThreshold: backend.setReactionThreshold,
+                setReactionCooldown: backend.setReactionCooldown
             )
         }
     }
@@ -263,17 +261,6 @@ private struct CyberTitlebarRail: View {
                         )
                     )
                     .frame(height: 1)
-            }
-            .overlay(alignment: .topTrailing) {
-                HStack(spacing: 5) {
-                    ForEach(0..<9, id: \.self) { _ in
-                        Rectangle()
-                            .fill(CyberTheme.red.opacity(0.45))
-                            .frame(width: 12, height: 2)
-                    }
-                }
-                .padding(.top, 7)
-                .padding(.trailing, 14)
             }
     }
 }

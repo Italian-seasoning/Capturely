@@ -28,7 +28,7 @@ import Testing
         clip: clip,
         reveal: { revealed = $0 },
         play: { played = $0 },
-        export: { exported = $0 },
+        export: { clip, _ in exported = clip },
         share: { shared = $0 },
         delete: { deleted = $0 }
     )
@@ -67,4 +67,37 @@ import Testing
     #expect(clip.gameName == "Screen Capture")
     #expect(clip.sourceAppName == nil)
     #expect(clip.durationSeconds == 12)
+    #expect(clip.title == nil)
+    #expect(clip.tags.isEmpty)
+    #expect(clip.audioTracks.isEmpty)
+}
+
+@Test func clipRoundTripsManagementAndAudioTrackMetadata() throws {
+    let directory = URL(fileURLWithPath: "/tmp/Capturely", isDirectory: true)
+    let source = AudioSourceDescriptor.application(
+        displayName: "Roblox",
+        bundleIdentifier: "com.roblox.RobloxPlayer",
+        gain: 0.8
+    )
+    var clip = Clip(
+        gameID: UUID(),
+        gameName: "Roblox",
+        capturedAt: Date(timeIntervalSince1970: 100),
+        durationSeconds: 30,
+        presetName: "Studio",
+        folderURL: directory,
+        clipURL: directory.appendingPathComponent("clip.mov"),
+        metadataURL: directory.appendingPathComponent("metadata.json"),
+        thumbnailURL: directory.appendingPathComponent("thumbnail.jpg")
+    )
+    clip.title = "Final round"
+    clip.tags = ["ranked", "win"]
+    clip.audioTracks = [ClipAudioTrack(trackIndex: 0, source: source)]
+
+    let data = try JSONEncoder.capturely.encode(clip)
+    let decoded = try JSONDecoder.capturely.decode(Clip.self, from: data)
+
+    #expect(decoded.title == "Final round")
+    #expect(decoded.tags == ["ranked", "win"])
+    #expect(decoded.audioTracks == [ClipAudioTrack(trackIndex: 0, source: source)])
 }

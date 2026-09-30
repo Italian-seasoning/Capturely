@@ -65,6 +65,14 @@ import Testing
     #expect(ResourceUsage.cpuPercent(cpuDelta: 1, elapsed: 0) == nil)
 }
 
+@Test func clipEditorAppliesMuteAndSoloWithoutChangingStoredGains() {
+    let gains = [0.8, 0.6, 0.4]
+
+    #expect(ClipEditor.effectiveGains(gains: gains, muted: [1], soloed: []) == [0.8, 0, 0.4])
+    #expect(ClipEditor.effectiveGains(gains: gains, muted: [], soloed: [1]) == [0, 0.6, 0])
+    #expect(ClipEditor.effectiveGains(gains: gains, muted: [1], soloed: [1]) == [0, 0, 0])
+}
+
 @Test @MainActor func processLoggerReadsCountersAndWritesClipWindow() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let logger = GameProcessLogger(logsDirectory: root)

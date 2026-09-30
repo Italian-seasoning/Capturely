@@ -100,6 +100,10 @@ struct AppSettings: Codable, Equatable, Sendable {
     var keepsEditableAudio = true
     var libraryLimitGB = 0
     var logsGameProcess = true
+    var isolatedAudioSources: [AudioSourceDescriptor] = []
+    var reactionClippingEnabled = false
+    var reactionThreshold: Double = 0.35
+    var reactionCooldownSeconds: Double = 30
 
     static let defaults = AppSettings(
         selectedPresetID: CapturePreset.balanced.id,
@@ -135,6 +139,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         case hasCompletedOnboarding
         case automaticGameSessions, keepsEditableAudio, libraryLimitGB
         case logsGameProcess
+        case isolatedAudioSources
+        case reactionClippingEnabled, reactionThreshold, reactionCooldownSeconds
     }
 
     init(
@@ -151,7 +157,8 @@ struct AppSettings: Codable, Equatable, Sendable {
         systemAudioMix: Double = 1,
         microphoneMix: Double = 0.82,
         customPreset: CustomCapturePresetSettings = .defaults,
-        hasCompletedOnboarding: Bool = false
+        hasCompletedOnboarding: Bool = false,
+        isolatedAudioSources: [AudioSourceDescriptor] = []
     ) {
         self.selectedPresetID = selectedPresetID
         self.clipLibraryURL = clipLibraryURL
@@ -167,6 +174,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         self.microphoneMix = microphoneMix
         self.customPreset = customPreset.performanceSafe
         self.hasCompletedOnboarding = hasCompletedOnboarding
+        self.isolatedAudioSources = Self.normalizedIsolatedAudioSources(isolatedAudioSources)
     }
 
     init(from decoder: Decoder) throws {
@@ -189,6 +197,23 @@ struct AppSettings: Codable, Equatable, Sendable {
         logsGameProcess = try container.decodeIfPresent(Bool.self, forKey: .logsGameProcess) ?? true
         keepsEditableAudio = try container.decodeIfPresent(Bool.self, forKey: .keepsEditableAudio) ?? true
         libraryLimitGB = min(1000, max(0, try container.decodeIfPresent(Int.self, forKey: .libraryLimitGB) ?? 0))
+        isolatedAudioSources = Self.normalizedIsolatedAudioSources(
+            try container.decodeIfPresent([AudioSourceDescriptor].self, forKey: .isolatedAudioSources) ?? []
+        )
+        reactionClippingEnabled = try container.decodeIfPresent(Bool.self, forKey: .reactionClippingEnabled) ?? false
+        reactionThreshold = min(1, max(0.05, try container.decodeIfPresent(Double.self, forKey: .reactionThreshold) ?? 0.35))
+        reactionCooldownSeconds = min(300, max(10, try container.decodeIfPresent(Double.self, forKey: .reactionCooldownSeconds) ?? 30))
+    }
+
+    static func normalizedIsolatedAudioSources(_ sources: [AudioSourceDescriptor]) -> [AudioSourceDescriptor] {
+        var bundleIdentifiers = Set<String>()
+        return sources.filter { source in
+            guard source.kind == .application,
+                  let bundleIdentifier = source.bundleIdentifier,
+                  !bundleIdentifier.isEmpty,
+                  bundleIdentifiers.insert(bundleIdentifier).inserted else { return false }
+            return true
+        }.prefix(4).map { $0 }
     }
 }
 

@@ -7,7 +7,27 @@ struct ReplaySegment: Equatable, Sendable {
     var url: URL
     var startedAt: Date
     var durationSeconds: TimeInterval
-    var audioGains: [Double] = []
+    var audioSources: [AudioSourceDescriptor] = []
+
+    var audioGains: [Double] { audioSources.map(\.gain) }
+
+    init(url: URL, startedAt: Date, durationSeconds: TimeInterval, audioSources: [AudioSourceDescriptor] = []) {
+        self.url = url
+        self.startedAt = startedAt
+        self.durationSeconds = durationSeconds
+        self.audioSources = audioSources
+    }
+
+    init(url: URL, startedAt: Date, durationSeconds: TimeInterval, audioGains: [Double]) {
+        self.init(
+            url: url,
+            startedAt: startedAt,
+            durationSeconds: durationSeconds,
+            audioSources: audioGains.enumerated().map {
+                AudioSourceDescriptor(id: "legacy:\($0.offset)", kind: .system, displayName: "Audio \($0.offset + 1)", bundleIdentifier: nil, gain: $0.element)
+            }
+        )
+    }
 }
 
 final class ReplaySegmentWriter: @unchecked Sendable {
@@ -22,6 +42,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     private var audioChannelCount: Int = 0
     var onDiagnosticEvent: (@Sendable (CaptureDiagnosticEvent) -> Void)?
     var onAudioMonitorUpdated: (@Sendable () -> Void)?
+    var onMicrophoneLevelUpdated: (@Sendable () -> Void)?
 
     private let directory: URL
     private var maximumDurationSeconds: TimeInterval
@@ -32,12 +53,16 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     private var finishingSegmentDurations: [URL: TimeInterval] = [:]
     private var segmentFinishWaiters: [@Sendable () -> Void] = []
     private var preset: CapturePreset = .balanced
+    private var audioSources: [AudioSourceDescriptor] = []
     private var hasReportedFirstVideoSample = false
     private var hasReportedFirstAudioSample = false
     private var lastVideoTimestampUpdateAt = -Double.greatestFiniteMagnitude
     private var lastAudioTimestampUpdateAt = -Double.greatestFiniteMagnitude
     private var lastAudioMonitorUpdateAt = -Double.greatestFiniteMagnitude
     private var lastAudioMonitorAnalysisAt = -Double.greatestFiniteMagnitude
+    private var sourceAnalysisTimes: [String: TimeInterval] = [:]
+    private var microphoneLevel: Double = 0
+    private var microphoneSampleAt: TimeInterval = 0
     private var performance = CapturePerformanceSnapshot.empty
     private var totalVideoAppendMilliseconds: Double = 0
     private var totalAudioAppendMilliseconds: Double = 0
@@ -58,14 +83,15 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         self.processingQueue = processingQueue
     }
 
-    func startRecording(preset: CapturePreset) throws {
+    func startRecording(preset: CapturePreset, audioSources: [AudioSourceDescriptor]? = nil) throws {
         try processingQueue.sync {
             self.preset = preset
+            self.audioSources = audioSources ?? preset.audioSources
             lastVideoSampleAt = nil
             lastAudioSampleAt = nil
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try removeStaleTemporarySegments()
-            audioStatus = preset.recordsSystemAudio || preset.recordsMicrophone ? .expectedButMissing : .none
+            audioStatus = self.audioSources.isEmpty ? .none : .expectedButMissing
             audioLevel = 0
             audioQualityScore = 0
             recentAudioLevels = []
@@ -75,6 +101,9 @@ final class ReplaySegmentWriter: @unchecked Sendable {
             lastAudioTimestampUpdateAt = -Double.greatestFiniteMagnitude
             lastAudioMonitorUpdateAt = -Double.greatestFiniteMagnitude
             lastAudioMonitorAnalysisAt = -Double.greatestFiniteMagnitude
+            sourceAnalysisTimes = [:]
+            microphoneLevel = 0
+            microphoneSampleAt = 0
             performance = CapturePerformanceSnapshot(startedAt: Date())
             totalVideoAppendMilliseconds = 0
             totalAudioAppendMilliseconds = 0
@@ -157,6 +186,10 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         }
     }
 
+    var microphoneSignal: (level: Double, sampledAt: TimeInterval) {
+        processingQueue.sync { (microphoneLevel, microphoneSampleAt) }
+    }
+
     var healthMetrics: (
         activeSegmentCount: Int,
         currentBufferDurationSeconds: TimeInterval,
@@ -194,14 +227,26 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         // ScreenCaptureKit owns the bounded queue. Do not retain unbounded pixel
         // buffers in a second asynchronous queue when the encoder falls behind.
         processingQueue.sync { [weak self] in
+            guard let self else { return }
             switch type {
             case .screen:
-                self?.appendVideo(sampleBuffer)
-            case .audio, .microphone:
-                self?.appendAudio(sampleBuffer, type: type)
+                self.appendVideo(sampleBuffer)
+            case .audio:
+                self.appendAudioOnQueue(sampleBuffer, sourceID: audioSources.first(where: { $0.kind == .system })?.id ?? "system")
+            case .microphone:
+                guard let sourceID = audioSources.first(where: { $0.kind == .microphone })?.id else { return }
+                self.appendAudioOnQueue(sampleBuffer, sourceID: sourceID)
             @unknown default:
                 return
             }
+        }
+    }
+
+    func appendAudio(sampleBuffer: CMSampleBuffer, sourceID: String) {
+        guard sampleBuffer.isValid else { return }
+        nonisolated(unsafe) let sampleBuffer = sampleBuffer
+        processingQueue.sync { [weak self] in
+            self?.appendAudioOnQueue(sampleBuffer, sourceID: sourceID)
         }
     }
 
@@ -259,7 +304,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     }
 
     private func registerCompletedSegmentOnQueue(url: URL, startedAt: Date, durationSeconds: TimeInterval) {
-        segments.append(ReplaySegment(url: url, startedAt: startedAt, durationSeconds: durationSeconds, audioGains: preset.audioGains ?? []))
+        segments.append(ReplaySegment(url: url, startedAt: startedAt, durationSeconds: durationSeconds, audioSources: audioSources))
         segments.sort { $0.startedAt < $1.startedAt }
         trimSegments(now: Date())
     }
@@ -327,14 +372,22 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         }
     }
 
-    private func appendAudio(_ sampleBuffer: CMSampleBuffer, type: SCStreamOutputType) {
+    private func appendAudioOnQueue(_ sampleBuffer: CMSampleBuffer, sourceID: String) {
         performance.audioSamplesReceived += 1
         let now = ProcessInfo.processInfo.systemUptime
         updateAudioSampleTimestampIfNeeded(now: now)
-        audioStatus = audioStatus(for: type)
-        if now - lastAudioMonitorAnalysisAt >= Self.audioMonitorAnalysisInterval {
+        audioStatus = audioStatus(for: sourceID)
+        let isMicrophone = audioSources.first(where: { $0.id == sourceID })?.kind == .microphone
+        let interval = isMicrophone ? 0.1 : Self.audioMonitorAnalysisInterval
+        if now - (sourceAnalysisTimes[sourceID] ?? -Double.greatestFiniteMagnitude) >= interval {
+            sourceAnalysisTimes[sourceID] = now
             lastAudioMonitorAnalysisAt = now
             let monitor = Self.audioMonitorMetrics(from: sampleBuffer)
+            if isMicrophone {
+                microphoneLevel = monitor.level
+                microphoneSampleAt = now
+                onMicrophoneLevelUpdated?()
+            }
             audioLevel = (audioLevel * 0.68) + (monitor.level * 0.32)
             audioQualityScore = monitor.qualityScore
             recentAudioLevels.append(audioLevel)
@@ -351,7 +404,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         publishAudioMonitorUpdateIfNeeded()
 
         guard var activeSegment,
-              let audioInput = type == .microphone ? activeSegment.microphoneInput : activeSegment.audioInput,
+              let audioInput = activeSegment.audioInputs[sourceID],
               audioInput.isReadyForMoreMediaData else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard timestamp.isNumeric, timestamp >= activeSegment.sourceStartedAt else { return }
@@ -393,15 +446,16 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         performance.audioSamplesReceived == 1 || performance.audioSamplesReceived.isMultiple(of: Self.audioAppendTimingSampleInterval)
     }
 
-    private func audioStatus(for type: SCStreamOutputType) -> AudioTrackStatus {
-        switch (preset.recordsSystemAudio, preset.recordsMicrophone, type) {
-        case (true, true, _):
+    private func audioStatus(for sourceID: String) -> AudioTrackStatus {
+        let kinds = Set(audioSources.filter { $0.id == sourceID || activeSegment?.audioInputs[$0.id] != nil }.map(\.kind))
+        switch (kinds.contains(.system) || kinds.contains(.application), kinds.contains(.microphone)) {
+        case (true, true):
             return .gameAndMic
-        case (true, false, .audio):
+        case (true, false):
             return .gameOnly
-        case (false, true, .microphone):
+        case (false, true):
             return .micOnly
-        default:
+        case (false, false):
             return audioStatus
         }
     }
@@ -414,8 +468,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         self.activeSegment = nil
 
         activeSegment.videoInput.markAsFinished()
-        activeSegment.audioInput?.markAsFinished()
-        activeSegment.microphoneInput?.markAsFinished()
+        activeSegment.audioInputs.values.forEach { $0.markAsFinished() }
 
         let flushStartedAt = ProcessInfo.processInfo.systemUptime
         let duration = max(0.1, CMTimeSubtract(activeSegment.lastSourceTime, activeSegment.sourceStartedAt).seconds)
@@ -469,7 +522,6 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         guard writer.canAdd(videoInput) else { throw ReplaySegmentWriterError.cannotStartWriter }
         writer.add(videoInput)
 
-        var audioInput: AVAssetWriterInput?
         func makeAudioInput() throws -> AVAssetWriterInput {
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -482,8 +534,10 @@ final class ReplaySegmentWriter: @unchecked Sendable {
             writer.add(input)
             return input
         }
-        if preset.recordsSystemAudio { audioInput = try makeAudioInput() }
-        let microphoneInput = preset.recordsMicrophone ? try makeAudioInput() : nil
+        var audioInputs: [String: AVAssetWriterInput] = [:]
+        for source in audioSources {
+            audioInputs[source.id] = try makeAudioInput()
+        }
 
         guard writer.startWriting() else {
             throw writer.error ?? ReplaySegmentWriterError.cannotStartWriter
@@ -497,8 +551,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
             lastSourceTime: sourceStartedAt,
             writer: writer,
             videoInput: videoInput,
-            audioInput: audioInput,
-            microphoneInput: microphoneInput
+            audioInputs: audioInputs
         )
     }
 
@@ -697,8 +750,7 @@ private struct ActiveReplaySegment: @unchecked Sendable {
     var lastSourceTime: CMTime
     var writer: AVAssetWriter
     var videoInput: AVAssetWriterInput
-    var audioInput: AVAssetWriterInput?
-    var microphoneInput: AVAssetWriterInput?
+    var audioInputs: [String: AVAssetWriterInput]
 
     var estimatedDurationSeconds: TimeInterval {
         max(0, CMTimeSubtract(lastSourceTime, sourceStartedAt).seconds)
