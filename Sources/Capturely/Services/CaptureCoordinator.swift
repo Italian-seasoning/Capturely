@@ -1,4 +1,6 @@
 import AVFoundation
+import AppKit
+import Combine
 import Foundation
 import ScreenCaptureKit
 
@@ -20,6 +22,33 @@ final class CaptureCoordinator: NSObject, ObservableObject {
     private var stream: SCStream?
     private var isStarting = false
     private var generation = 0
+    let frameBarPlugin = FrameBarPlugin()
+    private var replayBookmarks = ReplayBookmarks()
+
+    @discardableResult func bookmark(now: Date = Date()) -> Bool {
+        guard state.isRecording else { return false }
+        return replayBookmarks.add(now: now)
+    }
+    private var filterContext: (RunningGameMatch, CaptureSourceMode, UInt32?)?
+    private var frameBarPIDs: [pid_t] = []
+    private var workspaceObservers = Set<AnyCancellable>()
+    private var refreshingFilter = false
+
+    /// Refresh only on companion process changes, never on each captured frame.
+    func refreshFrameBarExclusion() async {
+        guard !refreshingFilter, let activeStream = stream, let context = filterContext, context.1 == .selectedDisplay else { return }
+        let pids = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == "app.italianseasoning.FrameBar" }.map(\.processIdentifier).sorted()
+        guard pids != frameBarPIDs else { return }
+        refreshingFilter = true
+        defer { refreshingFilter = false }
+        do {
+            guard let source = try await windowResolver.resolveSource(for: context.0, mode: context.1, selectedDisplayID: context.2), stream === activeStream else { return }
+            try await activeStream.updateContentFilter(source.filter)
+            if stream === activeStream { frameBarPIDs = pids }
+        } catch {
+            onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .companionWarning, message: "FrameBar exclusion update failed: \(error.localizedDescription)"))
+        }
+    }
 
     init(
         replaySegmentWriter: ReplaySegmentWriter,
@@ -29,6 +58,12 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         self.replaySegmentWriter = replaySegmentWriter
         self.replayComposer = replayComposer
         self.thumbnailGenerator = thumbnailGenerator
+        super.init()
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            NSWorkspace.shared.notificationCenter.publisher(for: name).sink { [weak self] _ in
+                Task { @MainActor in await self?.refreshFrameBarExclusion() }
+            }.store(in: &workspaceObservers)
+        }
     }
 
     func start(
@@ -45,7 +80,9 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         generation += 1
         let startedGeneration = generation
         do {
-            onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .captureStarting, message: "Capture starting for \(match.game.displayName)"))
+            if state != .waitingForWindow(game: match.game) {
+                onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .captureStarting, message: "Capture starting for \(match.game.displayName)"))
+            }
 
             guard let resolvedSource = try await windowResolver.resolveSource(
                 for: match,
@@ -53,7 +90,8 @@ final class CaptureCoordinator: NSObject, ObservableObject {
                 selectedDisplayID: selectedDisplayID
             ) else {
                 guard generation == startedGeneration else { return }
-                state = .waitingForWindow(game: match.game)
+                let waitingState = CaptureState.waitingForWindow(game: match.game)
+                if state != waitingState { state = waitingState }
                 return
             }
             guard generation == startedGeneration else { return }
@@ -94,7 +132,10 @@ final class CaptureCoordinator: NSObject, ObservableObject {
             }
 
             try replaySegmentWriter.startRecording(preset: preset, audioSources: audioSources)
+            replayBookmarks.reset()
             self.stream = stream
+            filterContext = (match, sourceMode, selectedDisplayID)
+            frameBarPIDs = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == "app.italianseasoning.FrameBar" }.map(\.processIdentifier).sorted()
             try await stream.startCapture()
             guard generation == startedGeneration else {
                 try? await stream.stopCapture()
@@ -119,6 +160,9 @@ final class CaptureCoordinator: NSObject, ObservableObject {
     }
 
     func stop() async {
+        replayBookmarks.reset()
+        filterContext = nil
+        frameBarPlugin.sample(pid: nil)
         generation += 1
         let stoppingStream = stream
         stream = nil
@@ -152,11 +196,16 @@ final class CaptureCoordinator: NSObject, ObservableObject {
         audioGain: Double = 1,
         keepsEditableAudio: Bool = false
     ) async throws -> Clip {
+        // Keep the save's data even if capture stops while the active segment flushes.
+        let telemetrySamples = frameBarPlugin.samples
+        let bookmarkBuffer = replayBookmarks
         await replaySegmentWriter.flushActiveSegmentForClip(minimumDurationSeconds: Self.minimumActiveSegmentFlushDurationSeconds)
         let requestedDurationSeconds = replayDurationSeconds ?? TimeInterval(preset.replayDurationSeconds)
         let snapshotDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("Capturely-export-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: snapshotDirectory) }
         let selectedSegments = try replaySegmentWriter.snapshotSegments(forReplayDuration: requestedDurationSeconds, to: snapshotDirectory)
+        let telemetry = FrameBarPlugin.timeline(samples: telemetrySamples, segments: selectedSegments, duration: requestedDurationSeconds)
+        let bookmarks = bookmarkBuffer.snapshot(segments: selectedSegments, duration: requestedDurationSeconds)
         guard !selectedSegments.isEmpty else {
             onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .saveFailed, message: "Save failed: replay buffer is empty"))
             throw CaptureCoordinatorError.noReplaySegmentsAvailable
@@ -204,6 +253,11 @@ final class CaptureCoordinator: NSObject, ObservableObject {
             thumbnailURL: destination.thumbnailFile
         )
         do {
+            clip.bookmarks = bookmarks
+            if !bookmarks.isEmpty {
+                do { try JSONEncoder().encode(bookmarks).write(to: destination.folder.appendingPathComponent("bookmarks.json"), options: .atomic) }
+                catch { onDiagnosticEvent?(.init(kind: .companionWarning, message: "Bookmark sidecar could not be saved: \(error.localizedDescription)")) }
+            }
             if keepsEditableAudio, selectedSegments.contains(where: { $0.audioGains.count > 1 }) {
                 let sourceURL = destination.folder.appendingPathComponent("editable-source.mov")
                 do {
@@ -219,6 +273,14 @@ final class CaptureCoordinator: NSObject, ObservableObject {
                     try? FileManager.default.removeItem(at: sourceURL)
                     onDiagnosticEvent?(.init(kind: .editableAudioFailed, message: "Mixed video saved; editable audio source failed: \(error.localizedDescription)"))
                 }
+            }
+            do {
+                if let sidecars = try await FrameBarPlugin.export(entries: telemetry, folder: destination.folder) {
+                    clip.telemetryURL = sidecars.0
+                    clip.subtitleURL = sidecars.1
+                }
+            } catch {
+                onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .companionWarning, message: "Telemetry sidecar could not be saved: \(error.localizedDescription)"))
             }
             try await Self.writeMetadata(for: clip, to: destination.metadataFile)
             onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .metadataWritten, message: "Metadata written: \(destination.metadataFile.path(percentEncoded: false))"))
@@ -273,6 +335,9 @@ final class CaptureCoordinator: NSObject, ObservableObject {
     }
 
     private func cleanupFailedDestination(_ destination: ClipDestination) {
+        try? FileManager.default.removeItem(at: destination.folder.appendingPathComponent("telemetry.json"))
+        try? FileManager.default.removeItem(at: destination.folder.appendingPathComponent("telemetry.csv"))
+        try? FileManager.default.removeItem(at: destination.folder.appendingPathComponent("clip.srt"))
         try? FileManager.default.removeItem(at: destination.folder.appendingPathComponent("editable-source.mov"))
         try? FileManager.default.removeItem(at: destination.clipFile)
         try? FileManager.default.removeItem(at: destination.thumbnailFile)

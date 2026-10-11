@@ -36,6 +36,9 @@ struct CapturelyApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .capturelySaveDurationRequested)) { notification in
                     if let seconds = notification.object as? Int { backend.saveReplay(seconds: seconds) }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: .capturelyBookmarkRequested)) { _ in
+                    backend.bookmarkMoment()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: .capturelyReplaySaved)) { notification in
                     if let clip = notification.object as? Clip { gameOverlay.showSaved(clip: clip) }
                 }
@@ -70,6 +73,11 @@ struct CapturelyApp: App {
                 NotificationCenter.default.post(name: .capturelySaveClipRequested, object: nil)
             }
             .disabled(!backend.status.canSaveClip)
+            Button("Bookmark moment (⌃⌥⌘B)") { backend.bookmarkMoment() }
+                .disabled(!backend.status.isRecording)
+            if let time = backend.lastBookmarkAt, backend.status.isRecording {
+                Text("Bookmarked at \(time.formatted(date: .omitted, time: .standard))")
+            }
             Divider()
             Button(gameOverlay.isVisible ? "Hide In-Game Overlay (⌥⌘O)" : "Show In-Game Overlay (⌥⌘O)") {
                 gameOverlay.toggle(backend: backend)
@@ -116,4 +124,5 @@ extension Notification.Name {
     static let capturelyToggleOverlayRequested = Notification.Name("capturely.toggleOverlayRequested")
     static let capturelySaveDurationRequested = Notification.Name("capturely.saveDurationRequested")
     static let capturelyReplaySaved = Notification.Name("capturely.replaySaved")
+    static let capturelyBookmarkRequested = Notification.Name("capturely.bookmarkRequested")
 }

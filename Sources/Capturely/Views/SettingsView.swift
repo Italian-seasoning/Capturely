@@ -98,13 +98,15 @@ struct SettingsView: View {
                     Picker("Reaction cooldown", selection: Binding(get: { settings.reactionCooldownSeconds }, set: { setReactionCooldown($0) })) {
                         ForEach([10.0, 30, 60, 120], id: \.self) { Text("\(Int($0)) seconds").tag($0) }
                     }
-                    Toggle("Log game process while capturing", isOn: Binding(get: { settings.logsGameProcess }, set: setLogsGameProcess))
+                    Toggle("Log game process while capturing", isOn: Binding(get: { settings.logsGameProcess }, set: { setLogsGameProcess($0) }))
+                    Text("FrameBar companion: automatically hides its overlay from recordings. With logging enabled, running FrameBar adds game FPS, ping, GPU and frame timing to local clip telemetry and optional performance subtitles. Enable subtitles in Cut & Mix.")
+                        .font(.caption).foregroundStyle(CyberTheme.muted)
                     Text("Local CSV: game CPU, memory, traffic and capture health every 2s, with samples beside clips. Traffic is not ping; unavailable counters stay blank. Session logs cap at 10 MB.").font(.caption).foregroundStyle(CyberTheme.muted)
-                    Toggle("Automatic game sessions", isOn: Binding(get: { settings.automaticGameSessions }, set: setAutomaticGameSessions))
+                    Toggle("Automatic game sessions", isOn: Binding(get: { settings.automaticGameSessions }, set: { setAutomaticGameSessions($0) }))
                     Text("Buffer registered games, including Roblox, from launch to exit. Manual Stop lasts until the next launch.").font(.caption).foregroundStyle(CyberTheme.muted)
-                    Toggle("Keep separate game / mic audio for editing", isOn: Binding(get: { settings.keepsEditableAudio }, set: setKeepsEditableAudio))
+                    Toggle("Keep separate game / mic audio for editing", isOn: Binding(get: { settings.keepsEditableAudio }, set: { setKeepsEditableAudio($0) }))
                     Text("Dual-source saves keep an extra original; allow roughly twice the storage.").font(.caption).foregroundStyle(CyberTheme.muted)
-                    Picker("Automatic library cleanup", selection: Binding(get: { settings.libraryLimitGB }, set: setLibraryLimitGB)) {
+                    Picker("Automatic library cleanup", selection: Binding(get: { settings.libraryLimitGB }, set: { setLibraryLimitGB($0) })) {
                         Text("Off").tag(0)
                         ForEach([5, 10, 25, 50, 100, 250, 500, 1000], id: \.self) { Text("\($0) GB").tag($0) }
                     }

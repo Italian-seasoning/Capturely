@@ -148,7 +148,7 @@ struct ContentView: View {
         .foregroundStyle(CyberTheme.text)
         .transaction { if reduceMotion { $0.animation = nil } }
         .sheet(item: $backend.editingClip) { clip in
-            ClipEditorView(clip: clip) { start, end, gains in
+            ClipEditorView(clip: clip, comparisonClips: backend.clips) { start, end, gains in
                 try await backend.saveEditedClip(clip, start: start, end: end, gains: gains)
             }
         }
@@ -176,6 +176,7 @@ struct ContentView: View {
                 isDebugVisible: backend.isDebugVisible,
                 recentEvents: backend.recentEvents,
                 recentClips: backend.recentClips,
+                lastBookmarkAt: backend.lastBookmarkAt,
                 startCapture: backend.startCaptureRequested,
                 stopCapture: backend.stopCaptureRequested,
                 saveClip: backend.saveClipRequested,

@@ -15,14 +15,17 @@ struct Clip: Codable, Identifiable, Equatable, Sendable {
     var isStarred: Bool? = nil
     var editableSourceURL: URL? = nil
     var processLogURL: URL? = nil
+    var telemetryURL: URL? = nil
+    var subtitleURL: URL? = nil
     var title: String? = nil
     var tags: [String] = []
     var audioTracks: [ClipAudioTrack] = []
+    var bookmarks: [ClipBookmark] = []
 
     enum CodingKeys: String, CodingKey {
         case id, gameID, gameName, sourceAppName, capturedAt, durationSeconds, presetName
         case folderURL, clipURL, metadataURL, thumbnailURL
-        case isStarred, editableSourceURL, processLogURL, title, tags, audioTracks
+        case isStarred, editableSourceURL, processLogURL, telemetryURL, subtitleURL, title, tags, audioTracks, bookmarks
     }
 
     init(
@@ -67,8 +70,11 @@ struct Clip: Codable, Identifiable, Equatable, Sendable {
         isStarred = try container.decodeIfPresent(Bool.self, forKey: .isStarred)
         editableSourceURL = try container.decodeIfPresent(URL.self, forKey: .editableSourceURL)
         processLogURL = try container.decodeIfPresent(URL.self, forKey: .processLogURL)
+        telemetryURL = try container.decodeIfPresent(URL.self, forKey: .telemetryURL)
+        subtitleURL = try container.decodeIfPresent(URL.self, forKey: .subtitleURL)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         audioTracks = try container.decodeIfPresent([ClipAudioTrack].self, forKey: .audioTracks) ?? []
+        bookmarks = try container.decodeIfPresent([ClipBookmark].self, forKey: .bookmarks) ?? []
     }
 }

@@ -69,6 +69,7 @@ struct ClipEditor {
 
 struct ClipEditorView: View {
     var clip: Clip
+    var comparisonClips: [Clip] = []
     var save: (Double, Double, [Double]) async throws -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
@@ -81,8 +82,13 @@ struct ClipEditorView: View {
     @State private var tracks: [AVAssetTrack] = []
     @State private var busy = false
     @State private var error: String?
+    @State private var telemetry: [TimedTelemetry] = []
+    @State private var showsTelemetry = false
+    @State private var playbackSeconds = 0.0
+    @State private var timeObserver: Any?
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text("CUT & MIX").font(.title2.bold()).foregroundStyle(CyberTheme.red)
@@ -90,6 +96,38 @@ struct ClipEditorView: View {
                 Button("Close") { dismiss() }.disabled(busy)
             }
             VideoPlayer(player: player).frame(height: 270)
+                .overlay(alignment: .bottom) {
+                    if showsTelemetry, let entry = telemetry.first(where: { playbackSeconds >= $0.seconds && playbackSeconds < $0.seconds + $0.duration }) {
+                        Text(entry.reading.subtitle).font(.caption.monospaced()).multilineTextAlignment(.center)
+                            .padding(8).background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 6))
+                            .foregroundStyle(.white).padding(.bottom, 42).allowsHitTesting(false)
+                    }
+                }
+            if !telemetry.isEmpty {
+                Toggle("Performance subtitles", isOn: $showsTelemetry)
+                Text("Sampled FrameBar readings. Video stays clean; subtitles export as an optional SRT file.")
+                    .font(.caption).foregroundStyle(CyberTheme.muted)
+            }
+            if !clip.bookmarks.isEmpty {
+                HStack {
+                    Text("Bookmarks").font(.callout.weight(.medium))
+                    ScrollView(.horizontal) {
+                        HStack {
+                            ForEach(clip.bookmarks.filter { $0.seconds.isFinite && $0.seconds >= 0 && $0.seconds < duration }) { bookmark in
+                                Button(String(format: "%.1fs", bookmark.seconds)) { seek(bookmark.seconds) }
+                                    .help("\(bookmark.label) at \(bookmark.seconds.formatted()) seconds")
+                            }
+                        }
+                    }
+                }
+            }
+            if !telemetry.isEmpty, duration > 0 {
+                DisclosureGroup("Performance timeline & comparison") {
+                    ClipPerformanceView(clip: clip, entries: telemetry, duration: duration,
+                        playbackSeconds: playbackSeconds, comparisonClips: comparisonClips, seek: seek)
+                        .padding(.top, 8)
+                }
+            }
             if duration > 0.1 {
                 Text(String(format: "IN %.1fs   OUT %.1fs   •   %.1fs selected", start, end, end - start)).monospaced()
                 Slider(value: $start, in: 0...max(0.01, end - 0.1)) { Text("Start") }
@@ -137,12 +175,14 @@ struct ClipEditorView: View {
                     .disabled(busy || !ClipEditor.validRange(start: start, end: end, duration: duration))
             }
         }
-        .padding(22).frame(width: 640).background(CyberTheme.void)
+        .padding(22)
+        }.frame(width: 640, height: 720).background(CyberTheme.void)
         .foregroundStyle(CyberTheme.text).preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .interactiveDismissDisabled(busy)
         .task {
             do {
                 let asset = try await ClipEditor.composition(from: AVURLAsset(url: clip.editableSourceURL ?? clip.clipURL))
+                try Task.checkCancellation()
                 let loadedDuration = asset.duration.seconds
                 guard loadedDuration.isFinite, loadedDuration > 0.1 else { throw ClipEditorError.invalidRange }
                 tracks = asset.tracks.filter { $0.mediaType == .audio }
@@ -152,12 +192,25 @@ struct ClipEditorView: View {
                 let item = AVPlayerItem(asset: asset)
                 item.audioMix = ClipEditor.audioMix(tracks: tracks, gains: gains)
                 player.replaceCurrentItem(with: item)
-            } catch { self.error = error.localizedDescription }
+                if let url = clip.telemetryURL {
+                    telemetry = try await ClipTelemetry.load(url)
+                }
+                try Task.checkCancellation()
+                if !telemetry.isEmpty {
+                    timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { time in
+                        Task { @MainActor in playbackSeconds = time.seconds }
+                    }
+                }
+            } catch is CancellationError { /* Dismissed editors must not install new observers. */ }
+            catch { self.error = error.localizedDescription }
         }
         .onChange(of: gains) { _, _ in updatePreviewMix() }
         .onChange(of: muted) { _, _ in updatePreviewMix() }
         .onChange(of: soloed) { _, _ in updatePreviewMix() }
-        .onDisappear { player.pause(); player.replaceCurrentItem(with: nil) }
+        .onDisappear {
+            if let timeObserver { player.removeTimeObserver(timeObserver); self.timeObserver = nil }
+            player.pause(); player.replaceCurrentItem(with: nil)
+        }
     }
 
     private func seek(_ seconds: Double) {

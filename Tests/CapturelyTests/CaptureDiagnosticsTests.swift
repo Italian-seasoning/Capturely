@@ -34,7 +34,7 @@ import Testing
                 averageAudioAppendMilliseconds: 0.18,
                 lastSegmentFlushMilliseconds: 11.4
             ),
-            outputFolder: URL(fileURLWithPath: "/Users/nolan/Movies/Capturely"),
+            outputFolder: URL(fileURLWithPath: "/example/Movies/Capturely"),
             lastSaveResult: nil,
             lastError: nil
         ),

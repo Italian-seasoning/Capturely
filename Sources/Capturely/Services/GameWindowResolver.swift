@@ -45,7 +45,7 @@ struct GameWindowResolver {
     func resolveWindow(for match: RunningGameMatch) async throws -> ResolvedGameWindow? {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         let candidates = content.windows.filter { window in
-            window.owningApplication?.processID == match.processIdentifier
+            window.owningApplication?.processID == match.processIdentifier && window.windowLayer == 0 && window.frame.width >= 64 && window.frame.height >= 64
         }
 
         guard let selected = candidates.sorted(by: { lhs, rhs in
@@ -62,9 +62,10 @@ struct GameWindowResolver {
     }
 
     private func resolveDisplay(for match: RunningGameMatch, selectedDisplayID: UInt32?) async throws -> ResolvedCaptureSource? {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // Include hidden companion windows so its application is excluded before the HUD appears.
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
         let matchingWindows = content.windows.filter { window in
-            window.owningApplication?.processID == match.processIdentifier
+            window.owningApplication?.processID == match.processIdentifier && window.isOnScreen && window.windowLayer == 0
         }
         let selectedDisplay = selectedDisplayID.flatMap { displayID in
             content.displays.first { $0.displayID == displayID }
@@ -78,7 +79,7 @@ struct GameWindowResolver {
         guard let display else { return nil }
 
         let excludedApplications = content.applications.filter { application in
-            application.processID == ProcessInfo.processInfo.processIdentifier
+            application.processID == ProcessInfo.processInfo.processIdentifier || application.bundleIdentifier == "app.italianseasoning.FrameBar"
         }
 
         return ResolvedCaptureSource(

@@ -61,7 +61,7 @@ struct PerformancePanel: View {
                 Text(String(format: "BUFFER %.1fs", backend.health.currentBufferDurationSeconds))
                 Spacer(minLength: 0)
             }.padding(.top, 8)
-            Text("CPU: 100% = one core. Memory: current app footprint. Helper processes are excluded. Updates every 2s; capture FPS may fall on static screens.")
+            Text("CPU: 100% = one core. Memory: current app footprint. Helper processes are excluded. Updates every \(Int(backend.healthUpdateInterval))s; capture FPS may fall on static screens.")
                 .font(.caption2).foregroundStyle(CyberTheme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
             HStack(spacing: 16) {

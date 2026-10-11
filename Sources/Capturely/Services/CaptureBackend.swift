@@ -27,6 +27,12 @@ final class CaptureBackend: ObservableObject {
     @Published private(set) var isLibraryBusy = false
     @Published private(set) var libraryMessage: String?
     @Published var editingClip: Clip?
+    @Published private(set) var lastBookmarkAt: Date?
+
+    func bookmarkMoment() {
+        guard captureCoordinator.bookmark() else { return }
+        lastBookmarkAt = Date()
+    }
     private var resourceSampler = ResourceSampler()
     private let gameProcessLogger = GameProcessLogger()
     @Published private(set) var gameProcessSample = GameProcessSample()
@@ -50,6 +56,7 @@ final class CaptureBackend: ObservableObject {
     private var lastSaveResult: SaveResult?
     private var lastError: String?
     private var healthMonitorTask: Task<Void, Never>?
+    private var healthMonitorInterval: TimeInterval?
     private var settingsSaveTask: Task<Void, Never>?
     private var hasReportedBufferReady = false
     private var hasStarted = false
@@ -432,7 +439,9 @@ final class CaptureBackend: ObservableObject {
             isLibraryBusy = true
             defer { isLibraryBusy = false }
             do {
+                try await FrameBarPlugin.validateExportSidecars(clip: clip, destination: url)
                 try await ClipExporter().export(source: clip.clipURL, destination: url, preset: preset)
+                try await FrameBarPlugin.exportSidecars(clip: clip, destination: url)
                 libraryMessage = "Exported \(preset.displayName) copy."
                 share(url)
             } catch {
@@ -497,10 +506,18 @@ final class CaptureBackend: ObservableObject {
             try await ClipEditor.export(source: source.editableSourceURL ?? source.clipURL, output: output, start: start, end: end, gains: gains)
             let thumbnail = folder.appendingPathComponent("thumbnail.jpg")
             try? await VideoThumbnailGenerator().generateThumbnail(for: output, outputURL: thumbnail)
-            let clip = Clip(id: UUID(), gameID: source.gameID, gameName: source.gameName,
+            var clip = Clip(id: UUID(), gameID: source.gameID, gameName: source.gameName,
                 sourceAppName: source.sourceAppName, capturedAt: Date(), durationSeconds: max(1, Int((end - start).rounded())),
                 presetName: "\(source.presetName) · Edited", folderURL: folder, clipURL: output,
                 metadataURL: folder.appendingPathComponent("metadata.json"), thumbnailURL: thumbnail)
+            if let sidecars = try await FrameBarPlugin.trimSidecars(source: source.telemetryURL, folder: folder, start: start, end: end) {
+                clip.telemetryURL = sidecars.0
+                clip.subtitleURL = sidecars.1
+            }
+            clip.bookmarks = ReplayBookmarks.trimmed(source.bookmarks, start: start, end: end)
+            if !clip.bookmarks.isEmpty {
+                try JSONEncoder().encode(clip.bookmarks).write(to: folder.appendingPathComponent("bookmarks.json"), options: .atomic)
+            }
             try JSONEncoder.capturely.encode(clip).write(to: clip.metadataURL, options: .atomic)
             var updated = clips
             updated.insert(clip, at: 0)
@@ -759,8 +776,11 @@ final class CaptureBackend: ObservableObject {
                 do {
                     if try gameProcessLogger.saveWindow(pid: loggingPID, endingAt: capturedAt, duration: Double(clip.durationSeconds), to: url) {
                         clip.processLogURL = url
-                        try JSONEncoder.capturely.encode(clip).write(to: clip.metadataURL, options: .atomic)
-                        try clipIndexStore.save([clip] + clips)
+                        let loggedClip = clip
+                        try await Task.detached(priority: .utility) {
+                            try JSONEncoder.capturely.encode(loggedClip).write(to: loggedClip.metadataURL, options: .atomic)
+                        }.value
+                        try await clipIndexStore.saveAsync([clip] + clips)
                     }
                 } catch { libraryMessage = "Video saved; process log failed: \(error.localizedDescription)" }
             }
@@ -788,11 +808,13 @@ final class CaptureBackend: ObservableObject {
     }
 
     private func updateDerivedState(windowTitle: String? = nil, isWindowLocked: Bool = false) {
+        if !captureCoordinator.state.isRecording, lastBookmarkAt != nil { lastBookmarkAt = nil }
         DiscordPresenceBridge.shared.update(captureCoordinator.state)
         let metrics = captureCoordinator.replaySegmentWriter.healthMetrics
         let outputFolder = try? (settings.clipLibraryURL ?? appPaths.defaultClipLibraryDirectory)
-        isCaptureConfigurationLocked = captureCoordinator.state.locksCaptureConfiguration
-        health = CaptureHealthSnapshot(
+        let locked = captureCoordinator.state.locksCaptureConfiguration
+        if isCaptureConfigurationLocked != locked { isCaptureConfigurationLocked = locked }
+        let nextHealth = CaptureHealthSnapshot(
             detectedAppName: displayedCaptureName,
             captureState: captureCoordinator.state.runtimeState,
             activeSegmentCount: metrics.activeSegmentCount,
@@ -810,20 +832,22 @@ final class CaptureBackend: ObservableObject {
             lastSaveResult: lastSaveResult,
             lastError: lastError
         )
-        recordingState = RecordingState.derive(
+        if health != nextHealth { health = nextHealth }
+        let nextRecordingState = RecordingState.derive(
             captureState: captureCoordinator.state,
             permissionSummary: permissionSummary,
             preset: runtimePreset(for: captureCoordinator.state.game ?? currentMatch?.game),
             bufferDurationSeconds: metrics.currentBufferDurationSeconds,
             lastSaveResult: lastSaveResult
         )
+        if recordingState != nextRecordingState { recordingState = nextRecordingState }
         if !hasReportedBufferReady,
            case .readyToSave = recordingState {
             hasReportedBufferReady = true
             record(.init(kind: .bufferReady, message: "Replay buffer ready: \(String(format: "%.1fs", metrics.currentBufferDurationSeconds))"))
         }
 
-        status = RecordingDisplayStatus(
+        let nextStatus = RecordingDisplayStatus(
             captureState: captureCoordinator.state,
             windowTitle: windowTitle ?? currentMatch?.game.preferredWindowTitle ?? selectedDisplayName,
             isWindowLocked: isWindowLocked,
@@ -831,6 +855,8 @@ final class CaptureBackend: ObservableObject {
             storageFreeDescription: "Local storage ready",
             micStatusDescription: permissionSummary.microphoneGranted ? "Mic on" : "Mic optional"
         )
+        if status != nextStatus { status = nextStatus }
+        startHealthMonitoring()
     }
 
     private func captureFailed(_ message: String, windowTitle: String?) {
@@ -842,15 +868,17 @@ final class CaptureBackend: ObservableObject {
     private func updateHealthOnly(lastError: String?) {
         let signal = captureCoordinator.replaySegmentWriter.microphoneSignal
         let now = ProcessInfo.processInfo.systemUptime
-        microphoneLevel = captureCoordinator.state.isRecording && now - signal.sampledAt < 1.5 ? signal.level : 0
+        let level = captureCoordinator.state.isRecording && now - signal.sampledAt < 1.5 ? signal.level : 0
+        if microphoneLevel != level { microphoneLevel = level }
         if reactionDetector.shouldClip(level: signal.level, sampledAt: signal.sampledAt, now: now,
             threshold: settings.reactionThreshold, cooldown: settings.reactionCooldownSeconds,
             eligible: settings.reactionClippingEnabled && settings.recordsMicrophone && status.canSaveClip && !isLibraryBusy && !isSaveInProgress) {
             saveClipRequested()
         }
         let metrics = captureCoordinator.replaySegmentWriter.healthMetrics
-        isCaptureConfigurationLocked = captureCoordinator.state.locksCaptureConfiguration
-        health = CaptureHealthSnapshot(
+        let locked = captureCoordinator.state.locksCaptureConfiguration
+        if isCaptureConfigurationLocked != locked { isCaptureConfigurationLocked = locked }
+        let nextHealth = CaptureHealthSnapshot(
             detectedAppName: displayedCaptureName,
             captureState: captureCoordinator.state.runtimeState,
             activeSegmentCount: metrics.activeSegmentCount,
@@ -868,25 +896,75 @@ final class CaptureBackend: ObservableObject {
             lastSaveResult: lastSaveResult,
             lastError: lastError
         )
+        if health != nextHealth { health = nextHealth }
+    }
+
+    nonisolated static func healthMonitoringInterval(isRecording: Bool) -> TimeInterval {
+        isRecording ? 2 : 10
+    }
+
+    nonisolated static func shouldRetryWaitingCapture(
+        state: CaptureState,
+        match: RunningGameMatch?,
+        automaticGameSessions: Bool,
+        isManualCaptureActive: Bool,
+        suppressedGamePID: pid_t?
+    ) -> Bool {
+        guard automaticGameSessions, !isManualCaptureActive,
+              case .waitingForWindow(let game) = state,
+              let match, game.id == match.game.id,
+              match.processIdentifier != suppressedGamePID else { return false }
+        return true
+    }
+
+    var healthUpdateInterval: TimeInterval {
+        Self.healthMonitoringInterval(isRecording: captureCoordinator.state.isRecording)
     }
 
     private func startHealthMonitoring() {
+        guard hasStarted else { return }
+        let interval = healthUpdateInterval
+        guard healthMonitorTask == nil || healthMonitorInterval != interval else { return }
         healthMonitorTask?.cancel()
+        healthMonitorInterval = interval
         healthMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                await self?.checkCaptureHealth()
+                do { try await Task.sleep(for: .seconds(interval)) } catch { break }
+                guard !Task.isCancelled, let self else { break }
+                await self.checkCaptureHealth()
             }
         }
     }
 
     private func checkCaptureHealth() async {
+        captureCoordinator.frameBarPlugin.sample(pid: settings.logsGameProcess && captureCoordinator.state.isRecording ? currentMatch?.processIdentifier : nil, performance: health.performance)
+        await captureCoordinator.refreshFrameBarExclusion()
         updateDerivedState(windowTitle: currentMatch?.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
         resourceUsage = resourceSampler.sample(performance: health.performance, recording: captureCoordinator.state.isRecording)
         gameProcessSample = gameProcessLogger.sample(
             pid: settings.logsGameProcess && captureCoordinator.state.isRecording ? currentMatch?.processIdentifier : nil,
             appUsage: resourceUsage, performance: health.performance)
         if !settings.logsGameProcess { gameProcessSample.status = "Process logging is off" }
+        if Self.shouldRetryWaitingCapture(
+            state: captureCoordinator.state,
+            match: currentMatch,
+            automaticGameSessions: settings.automaticGameSessions,
+            isManualCaptureActive: isManualCaptureActive,
+            suppressedGamePID: suppressedGamePID
+        ), let match = currentMatch {
+            // Launch notifications can precede the game's window. The process
+            // match stays unchanged when that window appears, so retry here.
+            await captureCoordinator.start(
+                match: match,
+                preset: runtimePreset(for: match.game),
+                sourceMode: settings.captureSourceMode,
+                selectedDisplayID: settings.selectedDisplayID,
+                microphoneDeviceID: settings.microphoneDeviceID,
+                isolatedAudioSources: settings.isolatedAudioSources
+            )
+            updateDerivedState(windowTitle: currentMatch?.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
+            return
+        }
         if await activatePerformanceFallbackIfNeeded() {
             return
         }

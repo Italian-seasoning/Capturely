@@ -24,6 +24,7 @@ final class HotkeyService: ObservableObject {
                 let service = Unmanaged<HotkeyService>.fromOpaque(context).takeUnretainedValue()
                 if id.id == 1 { service.saveClipHandler?() }
                 if id.id == 2 { NotificationCenter.default.post(name: .capturelyToggleOverlayRequested, object: nil) }
+                if id.id == 6 { NotificationCenter.default.post(name: .capturelyBookmarkRequested, object: nil) }
                 if let seconds = HotkeyService.replaySeconds(forHotkeyID: id.id) {
                     NotificationCenter.default.post(name: .capturelySaveDurationRequested, object: seconds)
                 }
@@ -39,6 +40,7 @@ final class HotkeyService: ObservableObject {
         }
         register(key: UInt32(hotkey.key.lowercased() == "r" ? kVK_ANSI_R : kVK_ANSI_C), modifiers: modifiers, id: 1)
         register(key: UInt32(kVK_ANSI_O), modifiers: UInt32(optionKey | cmdKey), id: 2)
+        register(key: UInt32(kVK_ANSI_B), modifiers: UInt32(controlKey | optionKey | cmdKey), id: 6)
         for (index, key) in [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3].enumerated() {
             register(key: UInt32(key), modifiers: UInt32(optionKey | cmdKey), id: UInt32(index + 3))
         }
@@ -57,7 +59,7 @@ final class HotkeyService: ObservableObject {
         let result = RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: 0x43505452, id: id), GetApplicationEventTarget(), 0, &reference)
         if result == noErr, let reference { hotkeyRefs.append(reference) }
         else {
-            let label = Self.replaySeconds(forHotkeyID: id).map { "\($0)s replay" } ?? (id == 1 ? "Save replay" : "Overlay")
+            let label = Self.replaySeconds(forHotkeyID: id).map { "\($0)s replay" } ?? (id == 1 ? "Save replay" : id == 6 ? "Bookmark" : "Overlay")
             registrationError = [registrationError, "\(label) shortcut unavailable (\(result)); check for conflicts."].compactMap { $0 }.joined(separator: " ")
         }
     }

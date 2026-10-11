@@ -1,6 +1,7 @@
 import Foundation
 
 enum CaptureDiagnosticEventKind: String, Codable, Equatable, Sendable {
+    case companionWarning
     case appDetected
     case captureStarting
     case captureStarted

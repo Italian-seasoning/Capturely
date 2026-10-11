@@ -29,7 +29,7 @@ struct ClipPathBuilder: Sendable {
             }
         }
 
-        return destination(forGameName: gameName, capturedAt: Date())
+        return destination(forGameName: gameName, capturedAt: date, folderSuffix: UUID().uuidString)
     }
 
     private func destination(forGameName gameName: String, capturedAt date: Date, folderSuffix: String?) -> ClipDestination {
@@ -56,9 +56,10 @@ struct ClipPathBuilder: Sendable {
     static func sanitizedFolderName(_ value: String) -> String {
         let disallowed = CharacterSet(charactersIn: "/:\\?%*|\"<>")
         let scalars = value.unicodeScalars.map { disallowed.contains($0) ? " " : String($0) }.joined()
-        return scalars
+        let name = scalars
             .split(separator: " ")
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == "." || name == ".." ? "Game" : name
     }
 }

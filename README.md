@@ -6,6 +6,12 @@
 
 Capturely is a native macOS replay clipping app for games. The MVP targets macOS 26 and records configured game windows into a local replay buffer.
 
+## Replay analysis and FrameBar
+
+The current source adds recording bookmarks, sampled performance timelines, clip comparisons, and local integration with [FrameBar](https://github.com/Italian-seasoning/FrameBar). Capturely excludes FrameBar from display captures and can export its metrics as optional subtitle and JSON sidecars. Bookmarks mark moments without saving a replay; use **Control–Option–Command–B** while recording, then seek them in a saved clip's editor.
+
+See [Replay analysis](docs/REPLAY_ANALYSIS.md), [FrameBar integration](docs/FRAMEBAR_INTEGRATION.md), and [Performance review](docs/PERFORMANCE_REVIEW_2026-10-10.md) for setup, measurements, and remaining gameplay checks. Sampled FPS summaries do not measure frame-level 1% lows. These changes are in source; the existing Homebrew/Sparkle release is separate.
+
 ## Install
 
 ```bash

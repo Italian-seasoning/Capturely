@@ -12,6 +12,27 @@ import Testing
     #expect(CaptureBackend.shouldStartManualCapture(hasCompletedOnboarding: true))
 }
 
+@Test func delayedGameWindowRetryHonorsTheCurrentSessionAndManualStop() {
+    let game = Game(displayName: "Delayed window", presetID: CapturePreset.balanced.id)
+    let match = RunningGameMatch(game: game, processIdentifier: 42, detectedAppName: game.displayName)
+    let waiting = CaptureState.waitingForWindow(game: game)
+    func allows(_ state: CaptureState = waiting, match candidate: RunningGameMatch? = match,
+                automatic: Bool = true, manual: Bool = false, suppressed: pid_t? = nil) -> Bool {
+        CaptureBackend.shouldRetryWaitingCapture(state: state, match: candidate,
+            automaticGameSessions: automatic, isManualCaptureActive: manual, suppressedGamePID: suppressed)
+    }
+    #expect(allows())
+    #expect(!allows(automatic: false))
+    #expect(!allows(manual: true))
+    #expect(!allows(suppressed: 42))
+    #expect(allows(suppressed: 99))
+    #expect(!allows(match: nil))
+    #expect(!allows(.idle))
+    #expect(!allows(.recording(game: game, preset: .balanced)))
+    let anotherGame = Game(displayName: "Another game", presetID: CapturePreset.balanced.id)
+    #expect(!allows(match: RunningGameMatch(game: anotherGame, processIdentifier: 42, detectedAppName: nil)))
+}
+
 @Test func everySaveHonorsConfiguredReplayDuration() {
     let firstSaveDuration = CaptureBackend.replayDurationSecondsForSave(
         capturedAt: Date(timeIntervalSince1970: 100),

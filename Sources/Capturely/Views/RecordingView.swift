@@ -8,6 +8,7 @@ struct RecordingView: View {
     var settings: AppSettings = .defaults
     var isDebugVisible: Bool = false
     var recentEvents: [CaptureDiagnosticEvent] = []
+    var lastBookmarkAt: Date?
     var startCapture: () -> Void = {}
     var stopCapture: () -> Void = {}
     var saveClip: () -> Void = {
@@ -36,6 +37,7 @@ struct RecordingView: View {
         isDebugVisible: Bool = false,
         recentEvents: [CaptureDiagnosticEvent] = [],
         recentClips: [RecentClipDisplay] = RecentClipDisplay.samples,
+        lastBookmarkAt: Date? = nil,
         startCapture: @escaping () -> Void = {},
         stopCapture: @escaping () -> Void = {},
         saveClip: @escaping () -> Void = {
@@ -62,6 +64,7 @@ struct RecordingView: View {
         self.exportDiagnostics = exportDiagnostics
         self.openClip = openClip
         self.recentClips = recentClips
+        self.lastBookmarkAt = lastBookmarkAt
     }
 
     var body: some View {
@@ -246,6 +249,14 @@ struct RecordingView: View {
                 hotkey: settings.saveClipHotkey,
                 saveClip: performSaveClip
             )
+            Button {
+                NotificationCenter.default.post(name: .capturelyBookmarkRequested, object: nil)
+            } label: {
+                Label(lastBookmarkAt.map { "Bookmark · \($0.formatted(date: .omitted, time: .standard))" } ?? "Bookmark · ⌃⌥⌘B",
+                      systemImage: lastBookmarkAt == nil ? "bookmark" : "bookmark.fill")
+            }.buttonStyle(.bordered).disabled(!status.isRecording)
+                .accessibilityLabel("Bookmark moment")
+                .help("Mark this moment without saving a replay. Bookmarks appear in clips that include it.")
         }
     }
 
