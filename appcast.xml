@@ -1,17 +1,15 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<?xml version="1.0" standalone="yes"?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
-        <title>Capturely Updates</title>
-        <link>https://github.com/Italian-seasoning/Capturely</link>
-        <description>Capturely release updates</description>
+        <title>Capturely</title>
         <item>
-            <title>0.1.0</title>
-            <pubDate>Fri, 11 Sep 2026 20:47:52 -0700</pubDate>
-            <sparkle:version>1</sparkle:version>
-            <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>10.13</sparkle:minimumSystemVersion>
+            <title>0.1.3</title>
+            <pubDate>Mon, 12 Oct 2026 08:14:18 -0700</pubDate>
+            <sparkle:version>2026101201</sparkle:version>
+            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/Italian-seasoning/Capturely/releases/download/v0.1.0/Capturely-0.1.0-macOS.zip" length="3156695" type="application/octet-stream" sparkle:edSignature="OTFNzMaDnUs5R14Shx93GBK6awmne6LtnI23HOEBjWTaDrvOG67JCX7x172p5PYrhZQhIjIcjbFSWiQIN1TLDQ=="/>
+            <enclosure url="https://github.com/Italian-seasoning/Capturely/releases/download/v0.1.3/Capturely-0.1.3-macOS.zip" length="3862927" type="application/octet-stream" sparkle:edSignature="8DaPbWaHAqJdzHvYxMRpHLGtoXs3IAUWtRlapRYm7fDP3wtUt6TSZ3PGNN+V0AhBCEGE53AL+FGhBMgNn32xBA=="/>
         </item>
     </channel>
 </rss>
