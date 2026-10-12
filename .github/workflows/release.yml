@@ -30,8 +30,7 @@ jobs:
         env:
           CAPTURELY_CODE_SIGN_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION }}
           CAPTURELY_VERSION: ${{ github.ref_name }}
-          CAPTURELY_BUILD_NUMBER: ${{ github.run_number }}
-        run: ./script/build_and_run.sh --verify
+        run: CAPTURELY_BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)" ./script/build_and_run.sh --verify
 
       - name: Notarize and package
         env:
@@ -58,7 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" Capturely.zip --generate-notes --title "Capturely $GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" Capturely.zip appcast.xml --generate-notes --title "Capturely $GITHUB_REF_NAME"
           git fetch origin main
           git checkout main
           cp updates/appcast.xml appcast.xml

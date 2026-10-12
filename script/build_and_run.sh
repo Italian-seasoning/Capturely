@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Capturely"
 BUNDLE_ID="com.italianseasoning.capturely"
-VERSION="${CAPTURELY_VERSION:-0.1.0}"
+VERSION="${CAPTURELY_VERSION:-0.1.3}"
 VERSION="${VERSION#v}"
 DIST_DIR="$ROOT/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
@@ -44,6 +44,13 @@ WARNING
 }
 
 cd "$ROOT"
+if [[ ! -f "$XCODE_WORKSPACE/contents.xcworkspacedata" ]]; then
+  mkdir -p "$XCODE_WORKSPACE"
+  cat > "$XCODE_WORKSPACE/contents.xcworkspacedata" <<'WORKSPACE'
+<?xml version="1.0" encoding="UTF-8"?>
+<Workspace version="1.0"><FileRef location="self:"></FileRef></Workspace>
+WORKSPACE
+fi
 xcodebuild \
   -workspace "$XCODE_WORKSPACE" \
   -scheme "$APP_NAME" \
@@ -54,7 +61,9 @@ xcodebuild \
 
 test -x "$XCODE_PRODUCT"
 
-pkill -x "$APP_NAME" 2>/dev/null || true
+if [[ "${1:-}" != "--verify" ]]; then
+  pkill -x "$APP_NAME" 2>/dev/null || true
+fi
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 cp "$XCODE_PRODUCT" "$MACOS_DIR/$APP_NAME"
@@ -83,9 +92,13 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key>
   <string>$VERSION</string>
   <key>CFBundleVersion</key>
-  <string>${CAPTURELY_BUILD_NUMBER:-1}</string>
+  <string>${CAPTURELY_BUILD_NUMBER:-2026101201}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>26.0</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
   <key>SUFeedURL</key>
   <string>https://raw.githubusercontent.com/Italian-seasoning/Capturely/main/appcast.xml</string>
   <key>SUPublicEDKey</key>
