@@ -4,6 +4,8 @@
   <img src="Assets/CapturelyLogo.png" width="180" alt="Capturely logo">
 </p>
 
+[View the software showcase](https://nolan-mac-apps.nolankrahn.chatgpt.site/apps/capturely)
+
 Capturely is a native macOS replay clipping app for games. The MVP targets macOS 26 and records configured game windows into a local replay buffer.
 
 ## Replay analysis and FrameBar
