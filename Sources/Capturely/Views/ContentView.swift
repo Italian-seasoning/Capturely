@@ -57,6 +57,9 @@ struct ContentView: View {
             }
         }
         .background(RecordingWindowVisibility { isRecordingWindowVisible = $0 })
+        .onChange(of: isAudioPresentationActive, initial: true) { _, active in
+            backend.setAudioPresentationActive(active)
+        }
         .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .onReceive(NotificationCenter.default.publisher(for: .capturelyOpenPageRequested)) { notification in
@@ -66,6 +69,10 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var isAudioPresentationActive: Bool {
+        isRecordingWindowVisible || !backend.settings.hasCompletedOnboarding || backend.editingClip != nil
     }
 
     private var mainInterface: some View {
@@ -170,7 +177,7 @@ struct ContentView: View {
     private var detailView: some View {
         switch selectedPage {
         case .recording:
-            if isRecordingWindowVisible || !backend.settings.hasCompletedOnboarding || backend.editingClip != nil {
+            if isAudioPresentationActive {
                 RecordingView(
                     status: backend.status,
                     recordingState: backend.recordingState,
