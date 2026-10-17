@@ -5,6 +5,8 @@ import Combine
 /// Capturely provider for the EnhancedPresence v1 local protocol.
 @MainActor final class DiscordPresenceBridge: ObservableObject {
     static let shared = DiscordPresenceBridge()
+    static let listenerHost: NWEndpoint.Host = "127.0.0.1"
+    static let listenerPort: NWEndpoint.Port = 48_731
     @Published var enabled = UserDefaults.standard.bool(forKey: "discordPresenceEnabled") {
         didSet {
             UserDefaults.standard.set(enabled, forKey: "discordPresenceEnabled")
@@ -16,6 +18,7 @@ import Combine
     private var clients: [UUID: NWConnection] = [:]
     private var startedAt: Int?
     private var payload = Data("{\"version\":1,\"type\":\"clear\"}".utf8)
+    var payloadForTesting: Data { payload }
     struct Activity: Codable {
         var appId = "com.capturely.app"
         var appName = "Capturely"
@@ -46,7 +49,7 @@ import Combine
         guard enabled, listener == nil else { return }
         do {
             let parameters = NWParameters.tcp
-            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: 48731)
+            parameters.requiredLocalEndpoint = .hostPort(host: Self.listenerHost, port: Self.listenerPort)
             let options = NWProtocolWebSocket.Options()
             options.autoReplyPing = true
             parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)

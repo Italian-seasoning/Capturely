@@ -11,7 +11,11 @@ struct LibraryStorage {
         clips.map { clip in
             let folder = clip.folderURL.standardizedFileURL
             let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])) ?? []
-            let expected = Set([clip.clipURL, clip.metadataURL, clip.thumbnailURL, clip.editableSourceURL, clip.processLogURL].compactMap { $0?.standardizedFileURL })
+            let expected = Set([clip.clipURL, clip.metadataURL, clip.thumbnailURL, clip.editableSourceURL, clip.processLogURL,
+                                clip.telemetryURL, clip.subtitleURL,
+                                folder.appendingPathComponent("telemetry.json"), folder.appendingPathComponent("telemetry.csv"),
+                                folder.appendingPathComponent("clip.srt"), folder.appendingPathComponent("bookmarks.json")]
+                .compactMap { $0?.standardizedFileURL })
             let folderIsLink = (try? folder.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) ?? true
             let metadata = try? Data(contentsOf: clip.metadataURL)
             let identity = metadata.flatMap { try? JSONDecoder.capturely.decode(Clip.self, from: $0) }

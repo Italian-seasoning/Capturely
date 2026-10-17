@@ -49,6 +49,36 @@ import Testing
     #expect(!LibraryStorage.inventory([clip])[0].safeToRemove)
 }
 
+@Test func cleanupInventoryIncludesEnrichedClipSidecars() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    var clip = testClip(root: root)
+    clip.editableSourceURL = root.appendingPathComponent("editable-source.mov")
+    clip.processLogURL = root.appendingPathComponent("process-log.csv")
+    clip.telemetryURL = root.appendingPathComponent("telemetry.json")
+    clip.subtitleURL = root.appendingPathComponent("clip.srt")
+    clip.bookmarks = [ClipBookmark(seconds: 2)]
+    try JSONEncoder.capturely.encode(clip).write(to: clip.metadataURL)
+    let sidecars = [clip.clipURL, clip.thumbnailURL, clip.editableSourceURL!, clip.processLogURL!,
+                    clip.telemetryURL!, clip.subtitleURL!, root.appendingPathComponent("telemetry.csv"),
+                    root.appendingPathComponent("bookmarks.json")]
+    for url in sidecars { try Data([1, 2, 3]).write(to: url) }
+    let entry = LibraryStorage.inventory([clip])[0]
+    #expect(entry.safeToRemove)
+    #expect(entry.bytes == Int64(try Data(contentsOf: clip.metadataURL).count + sidecars.count * 3))
+    #expect(LibraryStorage.removals(entries: [entry], limitBytes: 1).map(\.id) == [clip.id])
+    var partiallyEnriched = clip
+    partiallyEnriched.telemetryURL = nil
+    partiallyEnriched.subtitleURL = nil
+    partiallyEnriched.bookmarks = []
+    try JSONEncoder.capturely.encode(partiallyEnriched).write(to: clip.metadataURL)
+    #expect(LibraryStorage.inventory([partiallyEnriched])[0].safeToRemove)
+    try FileManager.default.removeItem(at: clip.telemetryURL!)
+    try FileManager.default.createSymbolicLink(at: clip.telemetryURL!, withDestinationURL: clip.clipURL)
+    #expect(!LibraryStorage.inventory([clip])[0].safeToRemove)
+}
+
 @Test func durationsAndNetworkParsingRejectBadInput() {
     #expect([3, 4, 5].map { HotkeyService.replaySeconds(forHotkeyID: UInt32($0)) } == [15, 30, 60])
     #expect(HotkeyService.replaySeconds(forHotkeyID: 9) == nil)
