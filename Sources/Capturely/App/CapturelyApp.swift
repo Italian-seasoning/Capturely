@@ -14,7 +14,7 @@ struct CapturelyApp: App {
     )
 
     var body: some Scene {
-        WindowGroup("Capturely", id: "main") {
+        Window("Capturely", id: "main") {
             ContentView()
                 .environmentObject(backend)
                 .frame(

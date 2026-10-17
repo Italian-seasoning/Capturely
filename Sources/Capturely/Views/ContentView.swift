@@ -24,6 +24,7 @@ struct ContentView: View {
     @EnvironmentObject private var backend: CaptureBackend
     @State private var selectedPage: CapturelyPage = .recording
     @State private var isOnboardingSettingsOpen = false
+    @State private var isRecordingWindowVisible = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var navigation
 
@@ -55,6 +56,7 @@ struct ContentView: View {
                 )
             }
         }
+        .background(RecordingWindowVisibility { isRecordingWindowVisible = $0 })
         .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .onReceive(NotificationCenter.default.publisher(for: .capturelyOpenPageRequested)) { notification in
@@ -168,21 +170,25 @@ struct ContentView: View {
     private var detailView: some View {
         switch selectedPage {
         case .recording:
-            RecordingView(
-                status: backend.status,
-                recordingState: backend.recordingState,
-                health: backend.health,
-                settings: backend.settings,
-                isDebugVisible: backend.isDebugVisible,
-                recentEvents: backend.recentEvents,
-                recentClips: backend.recentClips,
-                lastBookmarkAt: backend.lastBookmarkAt,
-                startCapture: backend.startCaptureRequested,
-                stopCapture: backend.stopCaptureRequested,
-                saveClip: backend.saveClipRequested,
-                toggleDebug: backend.toggleDebugVisibility,
-                exportDiagnostics: backend.exportDiagnostics
-            )
+            if isRecordingWindowVisible || !backend.settings.hasCompletedOnboarding || backend.editingClip != nil {
+                RecordingView(
+                    status: backend.status,
+                    recordingState: backend.recordingState,
+                    health: backend.health,
+                    settings: backend.settings,
+                    isDebugVisible: backend.isDebugVisible,
+                    recentEvents: backend.recentEvents,
+                    recentClips: backend.recentClips,
+                    lastBookmarkAt: backend.lastBookmarkAt,
+                    startCapture: backend.startCaptureRequested,
+                    stopCapture: backend.stopCaptureRequested,
+                    saveClip: backend.saveClipRequested,
+                    toggleDebug: backend.toggleDebugVisibility,
+                    exportDiagnostics: backend.exportDiagnostics
+                )
+            } else {
+                Color.clear
+            }
         case .library:
             LibraryView(
                 clips: backend.clips,

@@ -152,3 +152,15 @@ import Testing
     #expect(preset.maximumFramesPerSecond == 60)
     #expect(preset.videoBitrate == 36_000_000)
 }
+
+@Test func resolvedPresetUses1080p120CustomQualitySettings() {
+    var settings = AppSettings.defaults
+    settings.selectedPresetID = CapturePreset.custom.id
+    settings.customPreset = CustomCapturePresetSettings(maximumHeight: 1080, maximumFramesPerSecond: 120, videoBitrateMbps: 32)
+
+    let preset = CaptureBackend.resolvedPreset(for: nil, settings: settings)
+
+    #expect(preset.maximumHeight == 1080)
+    #expect(preset.maximumFramesPerSecond == 120)
+    #expect(preset.videoBitrate == 32_000_000)
+}
