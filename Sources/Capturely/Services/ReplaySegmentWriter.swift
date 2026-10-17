@@ -399,7 +399,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         }
         if !hasReportedFirstAudioSample {
             hasReportedFirstAudioSample = true
-            onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .firstAudioSampleReceived, message: "First audio sample received"))
+            onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .firstAudioSampleReceived, message: "First audio sample received (\(CMSampleBufferGetNumSamples(sampleBuffer)) frames)"))
         }
         publishAudioMonitorUpdateIfNeeded()
 
