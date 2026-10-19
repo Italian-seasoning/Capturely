@@ -17,7 +17,8 @@ final class CaptureCoordinator: NSObject, ObservableObject {
     let replaySegmentWriter: ReplaySegmentWriter
     private let replayComposer: any ReplayComposing
     private let thumbnailGenerator: any ThumbnailGenerating
-    private let sampleHandlerQueue = DispatchQueue(label: "capturely.stream.samples", qos: .utility)
+    // Utility QoS was starved by games under load, so ScreenCaptureKit dropped frames and clips stuttered.
+    private let sampleHandlerQueue = DispatchQueue(label: "capturely.stream.samples", qos: .userInitiated)
     private lazy var applicationAudioCapture = ApplicationAudioCapture(writer: replaySegmentWriter)
     private var stream: SCStream?
     private var isStarting = false
@@ -105,7 +106,7 @@ final class CaptureCoordinator: NSObject, ObservableObject {
             configuration.width = captureSize.width
             configuration.height = captureSize.height
             configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(1, preset.maximumFramesPerSecond)))
-            configuration.queueDepth = 2
+            configuration.queueDepth = Self.streamQueueDepth
             configuration.showsCursor = false
             configuration.pixelFormat = Self.streamPixelFormatForEncoding
             let audioSources = Self.resolvedAudioSources(
@@ -382,6 +383,8 @@ extension CaptureCoordinator: SCStreamOutput {
     }
 
     nonisolated static let streamPixelFormatForEncoding = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    // Two surfaces left no slack for an encoder hiccup or segment rollover; frames were dropped as clip stutter.
+    nonisolated static let streamQueueDepth = 5
 
     nonisolated static func resolvedAudioSources(
         preset: CapturePreset,

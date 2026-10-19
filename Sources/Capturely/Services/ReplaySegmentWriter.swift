@@ -50,6 +50,9 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     private let fileManager: FileManager
     private let processingQueue: DispatchQueue
     private var activeSegment: ActiveReplaySegment?
+    // The previous segment stays open briefly after rollover so late audio still lands before its exact end time.
+    private var closingSegment: ActiveReplaySegment?
+    private var closingAudioPending: Set<String> = []
     private var finishingSegmentDurations: [URL: TimeInterval] = [:]
     private var segmentFinishWaiters: [@Sendable () -> Void] = []
     private var preset: CapturePreset = .balanced
@@ -74,7 +77,8 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         maximumDurationSeconds: TimeInterval,
         segmentDurationSeconds: TimeInterval = ReplaySegmentWriter.defaultSegmentDurationSeconds,
         fileManager: FileManager = .default,
-        processingQueue: DispatchQueue = DispatchQueue(label: "capturely.replay.writer", qos: .utility)
+        // Utility QoS was starved by games under load, so ScreenCaptureKit dropped frames and clips stuttered.
+        processingQueue: DispatchQueue = DispatchQueue(label: "capturely.replay.writer", qos: .userInitiated)
     ) {
         self.directory = directory
         self.maximumDurationSeconds = maximumDurationSeconds
@@ -176,7 +180,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
 
     var activeSegmentCount: Int {
         processingQueue.sync {
-            segments.count + finishingSegmentDurations.count + (activeSegment == nil ? 0 : 1)
+            segments.count + finishingSegmentDurations.count + (closingSegment == nil ? 0 : 1) + (activeSegment == nil ? 0 : 1)
         }
     }
 
@@ -205,7 +209,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     ) {
         processingQueue.sync {
             (
-                activeSegmentCount: segments.count + finishingSegmentDurations.count + (activeSegment == nil ? 0 : 1),
+                activeSegmentCount: segments.count + finishingSegmentDurations.count + (closingSegment == nil ? 0 : 1) + (activeSegment == nil ? 0 : 1),
                 currentBufferDurationSeconds: bufferDurationSecondsOnQueue,
                 lastVideoSampleAt: lastVideoSampleAt,
                 lastAudioSampleAt: lastAudioSampleAt,
@@ -253,6 +257,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     private func finishActiveSegmentAndWait(minimumDurationSeconds: TimeInterval = 0) async {
         await withCheckedContinuation { continuation in
             processingQueue.async {
+                self.finishClosingSegment()
                 if minimumDurationSeconds > 0,
                    !self.segments.isEmpty,
                    let activeSegment = self.activeSegment,
@@ -284,6 +289,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     private var bufferDurationSecondsOnQueue: TimeInterval {
         segments.reduce(0) { $0 + $1.durationSeconds }
             + finishingSegmentDurations.values.reduce(0, +)
+            + (closingSegment?.estimatedDurationSeconds ?? 0)
             + (activeSegment?.estimatedDurationSeconds ?? 0)
     }
 
@@ -334,10 +340,21 @@ final class ReplaySegmentWriter: @unchecked Sendable {
             onDiagnosticEvent?(CaptureDiagnosticEvent(kind: .firstVideoSampleReceived, message: "First video sample received"))
         }
 
-        if let activeSegment {
+        if let closingSegment, let endTime = closingSegment.endTime,
+           CMTimeSubtract(sourceTime, endTime).seconds >= Self.closingAudioGraceSeconds {
+            finishClosingSegment()
+        }
+
+        if var activeSegment {
             let elapsed = CMTimeSubtract(sourceTime, activeSegment.sourceStartedAt).seconds
             if elapsed >= segmentDurationSeconds {
-                finishActiveSegment()
+                finishClosingSegment()
+                // End exactly where the next segment starts so joined clips have no gap or overlap.
+                activeSegment.endTime = sourceTime
+                closingSegment = activeSegment
+                closingAudioPending = Set(activeSegment.audioInputs.keys)
+                self.activeSegment = nil
+                if closingAudioPending.isEmpty { finishClosingSegment() }
             }
         }
 
@@ -403,27 +420,43 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         }
         publishAudioMonitorUpdateIfNeeded()
 
-        guard var activeSegment,
-              let audioInput = activeSegment.audioInputs[sourceID],
-              audioInput.isReadyForMoreMediaData else { return }
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard timestamp.isNumeric, timestamp >= activeSegment.sourceStartedAt else { return }
+        guard timestamp.isNumeric else { return }
+        let sampleDuration = CMSampleBufferGetDuration(sampleBuffer)
+        let sampleEnd = sampleDuration.isNumeric ? CMTimeAdd(timestamp, sampleDuration) : timestamp
 
-        let shouldMeasureAppend = shouldMeasureAudioAppend()
-        let appendStartedAt = shouldMeasureAppend ? ProcessInfo.processInfo.systemUptime : 0
-        if audioInput.append(sampleBuffer) {
-            performance.audioSamplesAppended += 1
-            if shouldMeasureAppend {
-                measuredAudioAppendCount += 1
-                totalAudioAppendMilliseconds += (ProcessInfo.processInfo.systemUptime - appendStartedAt) * 1_000
-                performance.averageAudioAppendMilliseconds = totalAudioAppendMilliseconds / Double(max(measuredAudioAppendCount, 1))
+        if let closingSegment, let endTime = closingSegment.endTime {
+            if timestamp < endTime, let input = closingSegment.audioInputs[sourceID] {
+                _ = appendAudioSample(sampleBuffer, to: input)
             }
-            let sourceTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            if sourceTime.isValid {
-                activeSegment.lastSourceTime = max(activeSegment.lastSourceTime, sourceTime)
-                self.activeSegment = activeSegment
+            if sampleEnd >= endTime {
+                closingAudioPending.remove(sourceID)
+                if closingAudioPending.isEmpty { finishClosingSegment() }
             }
         }
+
+        // A buffer straddling the session start is kept; AVAssetWriter trims the part before it, avoiding a silent gap.
+        guard var activeSegment,
+              let audioInput = activeSegment.audioInputs[sourceID],
+              sampleEnd > activeSegment.sourceStartedAt else { return }
+        if appendAudioSample(sampleBuffer, to: audioInput) {
+            activeSegment.lastSourceTime = max(activeSegment.lastSourceTime, timestamp)
+            self.activeSegment = activeSegment
+        }
+    }
+
+    private func appendAudioSample(_ sampleBuffer: CMSampleBuffer, to audioInput: AVAssetWriterInput) -> Bool {
+        guard audioInput.isReadyForMoreMediaData else { return false }
+        let shouldMeasureAppend = shouldMeasureAudioAppend()
+        let appendStartedAt = shouldMeasureAppend ? ProcessInfo.processInfo.systemUptime : 0
+        guard audioInput.append(sampleBuffer) else { return false }
+        performance.audioSamplesAppended += 1
+        if shouldMeasureAppend {
+            measuredAudioAppendCount += 1
+            totalAudioAppendMilliseconds += (ProcessInfo.processInfo.systemUptime - appendStartedAt) * 1_000
+            performance.averageAudioAppendMilliseconds = totalAudioAppendMilliseconds / Double(max(measuredAudioAppendCount, 1))
+        }
+        return true
     }
 
     private func updateVideoSampleTimestampIfNeeded(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
@@ -460,18 +493,30 @@ final class ReplaySegmentWriter: @unchecked Sendable {
         }
     }
 
+    private func finishClosingSegment() {
+        guard let closingSegment else { return }
+        self.closingSegment = nil
+        closingAudioPending = []
+        finish(closingSegment)
+    }
+
     private func finishActiveSegment(onComplete: (@Sendable () -> Void)? = nil) {
         guard let activeSegment else {
             onComplete?()
             return
         }
         self.activeSegment = nil
+        finish(activeSegment, onComplete: onComplete)
+    }
 
+    private func finish(_ activeSegment: ActiveReplaySegment, onComplete: (@Sendable () -> Void)? = nil) {
         activeSegment.videoInput.markAsFinished()
         activeSegment.audioInputs.values.forEach { $0.markAsFinished() }
 
         let flushStartedAt = ProcessInfo.processInfo.systemUptime
-        let duration = max(0.1, CMTimeSubtract(activeSegment.lastSourceTime, activeSegment.sourceStartedAt).seconds)
+        let endTime = activeSegment.endTime ?? activeSegment.lastSourceTime
+        if activeSegment.endTime != nil { activeSegment.writer.endSession(atSourceTime: endTime) }
+        let duration = max(0.1, CMTimeSubtract(endTime, activeSegment.sourceStartedAt).seconds)
         finishingSegmentDurations[activeSegment.url] = duration
 
         activeSegment.writer.finishWriting { [weak self] in
@@ -741,6 +786,7 @@ final class ReplaySegmentWriter: @unchecked Sendable {
     nonisolated static let videoAppendTimingSampleInterval = 30
     nonisolated static let audioAppendTimingSampleInterval = 20
     nonisolated static let defaultSegmentDurationSeconds: TimeInterval = 20
+    nonisolated static let closingAudioGraceSeconds: TimeInterval = 0.5
 }
 
 private struct ActiveReplaySegment: @unchecked Sendable {
@@ -748,6 +794,7 @@ private struct ActiveReplaySegment: @unchecked Sendable {
     var startedAt: Date
     var sourceStartedAt: CMTime
     var lastSourceTime: CMTime
+    var endTime: CMTime?
     var writer: AVAssetWriter
     var videoInput: AVAssetWriterInput
     var audioInputs: [String: AVAssetWriterInput]

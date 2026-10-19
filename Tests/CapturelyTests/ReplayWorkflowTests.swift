@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import Foundation
 import Testing
@@ -101,6 +102,14 @@ import Testing
     #expect(ClipEditor.effectiveGains(gains: gains, muted: [1], soloed: []) == [0.8, 0, 0.4])
     #expect(ClipEditor.effectiveGains(gains: gains, muted: [], soloed: [1]) == [0, 0.6, 0])
     #expect(ClipEditor.effectiveGains(gains: gains, muted: [1], soloed: [1]) == [0, 0, 0])
+}
+
+@Test func clipEditorCopiesUnchangedAudioAndReencodesMixesOrFades() {
+    #expect(ClipEditor.exportPresetName(gains: [], fadeIn: 0, fadeOut: 0) == AVAssetExportPresetPassthrough)
+    #expect(ClipEditor.exportPresetName(gains: [1], fadeIn: 0, fadeOut: 0) == AVAssetExportPresetPassthrough)
+    #expect(ClipEditor.exportPresetName(gains: [0.8], fadeIn: 0, fadeOut: 0) == AVAssetExportPresetHighestQuality)
+    #expect(ClipEditor.exportPresetName(gains: [1, 1], fadeIn: 0, fadeOut: 0) == AVAssetExportPresetHighestQuality)
+    #expect(ClipEditor.exportPresetName(gains: [1], fadeIn: 0.5, fadeOut: 0) == AVAssetExportPresetHighestQuality)
 }
 
 @Test @MainActor func processLoggerReadsCountersAndWritesClipWindow() async throws {

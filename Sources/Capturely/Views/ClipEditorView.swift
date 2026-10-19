@@ -32,15 +32,35 @@ struct ClipEditor {
         start.isFinite && end.isFinite && duration.isFinite && start >= 0 && end <= duration + 0.01 && end - start >= 0.1
     }
 
-    static func audioMix(tracks: [AVAssetTrack], gains: [Double]) -> AVAudioMix {
+    static func audioMix(tracks: [AVAssetTrack], gains: [Double], range: ClosedRange<Double>? = nil, fadeIn: Double = 0, fadeOut: Double = 0) -> AVAudioMix {
         let mix = AVMutableAudioMix()
         mix.inputParameters = tracks.enumerated().map { index, track in
             let parameter = AVMutableAudioMixInputParameters(track: track)
-            let gain = gains.indices.contains(index) && gains[index].isFinite ? min(1.5, max(0, gains[index])) : 1
-            parameter.setVolume(Float(gain), at: .zero)
+            let gain = Float(gains.indices.contains(index) && gains[index].isFinite ? min(1.5, max(0, gains[index])) : 1)
+            parameter.setVolume(gain, at: .zero)
+            if let range {
+                let length = range.upperBound - range.lowerBound
+                let fadeIn = min(max(fadeIn, 0), length / 2), fadeOut = min(max(fadeOut, 0), length / 2)
+                if fadeIn > 0 {
+                    parameter.setVolumeRamp(fromStartVolume: 0, toEndVolume: gain, timeRange: timeRange(range.lowerBound, fadeIn))
+                }
+                if fadeOut > 0 {
+                    parameter.setVolumeRamp(fromStartVolume: gain, toEndVolume: 0, timeRange: timeRange(range.upperBound - fadeOut, fadeOut))
+                }
+            }
             return parameter
         }
         return mix
+    }
+
+    private static func timeRange(_ start: Double, _ duration: Double) -> CMTimeRange {
+        CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600), duration: CMTime(seconds: duration, preferredTimescale: 600))
+    }
+
+    // Unchanged single-track audio copies samples instead of re-encoding: faster saves with no generation loss.
+    static func exportPresetName(gains: [Double], fadeIn: Double, fadeOut: Double) -> String {
+        gains.count <= 1 && gains.allSatisfy { abs($0 - 1) < 0.001 } && fadeIn <= 0 && fadeOut <= 0
+            ? AVAssetExportPresetPassthrough : AVAssetExportPresetHighestQuality
     }
 
     static func effectiveGains(gains: [Double], muted: Set<Int>, soloed: Set<Int>) -> [Double] {
@@ -50,17 +70,20 @@ struct ClipEditor {
         }
     }
 
-    static func export(source: URL, output: URL, start: Double, end: Double, gains: [Double]) async throws {
+    static func export(source: URL, output: URL, start: Double, end: Double, gains: [Double], fadeIn: Double = 0, fadeOut: Double = 0) async throws {
         try await Task.detached(priority: .utility) {
             let asset = try await composition(from: AVURLAsset(url: source))
             let duration = try await asset.load(.duration).seconds
             guard validRange(start: start, end: end, duration: duration) else { throw ClipEditorError.invalidRange }
-            guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+            let tracks = try await asset.loadTracks(withMediaType: .audio)
+            let presetName = exportPresetName(gains: Array(gains.prefix(tracks.count)), fadeIn: fadeIn, fadeOut: fadeOut)
+            guard let exporter = AVAssetExportSession(asset: asset, presetName: presetName) else {
                 throw ReplayComposerError.cannotCreateExporter
             }
             exporter.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600), end: CMTime(seconds: end, preferredTimescale: 600))
-            let tracks = try await asset.loadTracks(withMediaType: .audio)
-            if !tracks.isEmpty { exporter.audioMix = audioMix(tracks: tracks, gains: gains) }
+            if !tracks.isEmpty, presetName != AVAssetExportPresetPassthrough {
+                exporter.audioMix = audioMix(tracks: tracks, gains: gains, range: start...end, fadeIn: fadeIn, fadeOut: fadeOut)
+            }
             try await exporter.export(to: output, as: .mov)
             guard CaptureCoordinator.isValidClipOutput(output) else { throw CaptureCoordinatorError.invalidClipOutput }
         }.value
@@ -70,7 +93,7 @@ struct ClipEditor {
 struct ClipEditorView: View {
     var clip: Clip
     var comparisonClips: [Clip] = []
-    var save: (Double, Double, [Double]) async throws -> Void
+    var save: (Double, Double, [Double], Double, Double) async throws -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
     @State private var duration = 0.0
@@ -79,6 +102,8 @@ struct ClipEditorView: View {
     @State private var gains: [Double] = []
     @State private var muted: Set<Int> = []
     @State private var soloed: Set<Int> = []
+    @State private var fadeIn = 0.0
+    @State private var fadeOut = 0.0
     @State private var tracks: [AVAssetTrack] = []
     @State private var busy = false
     @State private var error: String?
@@ -129,16 +154,19 @@ struct ClipEditorView: View {
                 }
             }
             if duration > 0.1 {
-                Text(String(format: "IN %.1fs   OUT %.1fs   •   %.1fs selected", start, end, end - start)).monospaced()
-                Slider(value: $start, in: 0...max(0.01, end - 0.1)) { Text("Start") }
+                Text(String(format: "IN %.2fs   OUT %.2fs   •   %.2fs selected", start, end, end - start)).monospaced()
+                TrimTimeline(start: $start, end: $end, duration: duration, playhead: playbackSeconds, seek: seek)
                     .onChange(of: start) { _, value in seek(value) }
-                Slider(value: $end, in: min(duration - 0.01, start + 0.1)...duration) { Text("End") }
                     .onChange(of: end) { _, value in seek(value) }
-                Button("Preview selection") {
-                    seek(start)
-                    player.currentItem?.forwardPlaybackEndTime = CMTime(seconds: end, preferredTimescale: 600)
-                    player.play()
-                }.buttonStyle(CyberButtonStyle())
+                HStack {
+                    Button("Preview selection") {
+                        seek(start)
+                        player.currentItem?.forwardPlaybackEndTime = CMTime(seconds: end, preferredTimescale: 600)
+                        player.play()
+                    }.buttonStyle(CyberButtonStyle())
+                    Spacer()
+                    Text("I / O set in and out · Space play · ← → frame step").font(.caption).foregroundStyle(CyberTheme.muted)
+                }
                 ForEach(gains.indices, id: \.self) { index in
                     HStack {
                         Text(audioLabel(index)).frame(width: 120, alignment: .leading)
@@ -155,6 +183,12 @@ struct ClipEditorView: View {
                         Text("\(Int(gains[index] * 100))%").monospacedDigit().frame(width: 42)
                     }
                 }
+                if !tracks.isEmpty {
+                    HStack {
+                        Picker("Fade in", selection: $fadeIn) { fadeOptions }.frame(width: 150)
+                        Picker("Fade out", selection: $fadeOut) { fadeOptions }.frame(width: 150)
+                    }
+                }
                 Text(clip.editableSourceURL == nil ? "Original audio is already mixed." : "Each captured app and microphone has its own mute, solo, and gain control.")
                     .font(.caption).foregroundStyle(CyberTheme.muted)
             }
@@ -167,7 +201,7 @@ struct ClipEditorView: View {
                     busy = true
                     player.pause()
                     Task {
-                        do { try await save(start, end, effectiveGains); dismiss() }
+                        do { try await save(start, end, effectiveGains, fadeIn, fadeOut); dismiss() }
                         catch { self.error = error.localizedDescription }
                         busy = false
                     }
@@ -176,7 +210,19 @@ struct ClipEditorView: View {
             }
         }
         .padding(22)
-        }.frame(width: 640, height: 720).background(CyberTheme.void)
+        }
+        .focusable().focusEffectDisabled()
+        .onKeyPress(characters: ["i", "o", " "]) { press in
+            switch press.characters {
+            case "i": start = min(playbackSeconds, end - 0.1)
+            case "o": end = max(playbackSeconds, start + 0.1)
+            default: player.timeControlStatus == .playing ? player.pause() : player.play()
+            }
+            return .handled
+        }
+        .onKeyPress(.leftArrow) { step(-1) }
+        .onKeyPress(.rightArrow) { step(1) }
+        .frame(width: 640, height: 720).background(CyberTheme.void)
         .foregroundStyle(CyberTheme.text).preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .interactiveDismissDisabled(busy)
         .task {
@@ -196,10 +242,9 @@ struct ClipEditorView: View {
                     telemetry = try await ClipTelemetry.load(url)
                 }
                 try Task.checkCancellation()
-                if !telemetry.isEmpty {
-                    timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { time in
-                        Task { @MainActor in playbackSeconds = time.seconds }
-                    }
+                // The trim timeline needs the playhead even when there is no telemetry.
+                timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1.0 / 30, preferredTimescale: 600), queue: .main) { time in
+                    Task { @MainActor in playbackSeconds = time.seconds }
                 }
             } catch is CancellationError { /* Dismissed editors must not install new observers. */ }
             catch { self.error = error.localizedDescription }
@@ -207,6 +252,8 @@ struct ClipEditorView: View {
         .onChange(of: gains) { _, _ in updatePreviewMix() }
         .onChange(of: muted) { _, _ in updatePreviewMix() }
         .onChange(of: soloed) { _, _ in updatePreviewMix() }
+        .onChange(of: fadeIn) { _, _ in updatePreviewMix() }
+        .onChange(of: fadeOut) { _, _ in updatePreviewMix() }
         .onDisappear {
             if let timeObserver { player.removeTimeObserver(timeObserver); self.timeObserver = nil }
             player.pause(); player.replaceCurrentItem(with: nil)
@@ -216,6 +263,20 @@ struct ClipEditorView: View {
     private func seek(_ seconds: Double) {
         player.pause()
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    private func step(_ frames: Int) -> KeyPress.Result {
+        player.pause()
+        player.currentItem?.step(byCount: frames)
+        playbackSeconds = player.currentTime().seconds
+        return .handled
+    }
+
+    @ViewBuilder private var fadeOptions: some View {
+        Text("Off").tag(0.0)
+        Text("0.5s").tag(0.5)
+        Text("1s").tag(1.0)
+        Text("2s").tag(2.0)
     }
 
     private func audioLabel(_ index: Int) -> String {
@@ -231,6 +292,45 @@ struct ClipEditorView: View {
     }
 
     private func updatePreviewMix() {
-        player.currentItem?.audioMix = ClipEditor.audioMix(tracks: tracks, gains: effectiveGains)
+        player.currentItem?.audioMix = ClipEditor.audioMix(tracks: tracks, gains: effectiveGains, range: start...end, fadeIn: fadeIn, fadeOut: fadeOut)
+    }
+}
+
+/// One bar with draggable in/out handles and the playhead; clicking the bar seeks.
+struct TrimTimeline: View {
+    @Binding var start: Double
+    @Binding var end: Double
+    var duration: Double
+    var playhead: Double
+    var seek: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(geometry.size.width, 1)
+            let x = { (seconds: Double) in CGFloat(seconds / duration) * width }
+            let seconds = { (location: CGFloat) in min(max(Double(location / width) * duration, 0), duration) }
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4).fill(CyberTheme.panelRaised)
+                    .contentShape(Rectangle())
+                    .onTapGesture { location in seek(seconds(location.x)) }
+                RoundedRectangle(cornerRadius: 4).fill(CyberTheme.red.opacity(0.35))
+                    .frame(width: max(0, x(end) - x(start))).offset(x: x(start)).allowsHitTesting(false)
+                Rectangle().fill(CyberTheme.text).frame(width: 2).offset(x: x(min(max(playhead, 0), duration)) - 1).allowsHitTesting(false)
+                handle(label: "Start", value: $start, range: 0...max(0, end - 0.1)).offset(x: x(start) - 6)
+                    .gesture(DragGesture(coordinateSpace: .named("trim")).onChanged { start = min(seconds($0.location.x), end - 0.1) })
+                handle(label: "End", value: $end, range: min(duration, start + 0.1)...duration).offset(x: x(end) - 6)
+                    .gesture(DragGesture(coordinateSpace: .named("trim")).onChanged { end = max(seconds($0.location.x), start + 0.1) })
+            }
+            .coordinateSpace(name: "trim")
+        }
+        .frame(height: 34)
+    }
+
+    private func handle(label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        RoundedRectangle(cornerRadius: 3).fill(CyberTheme.red).frame(width: 12)
+            .help(label)
+            .accessibilityRepresentation {
+                Slider(value: value, in: range) { Text(label) }
+            }
     }
 }

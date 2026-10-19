@@ -157,8 +157,8 @@ struct ContentView: View {
         .foregroundStyle(CyberTheme.text)
         .transaction { if reduceMotion { $0.animation = nil } }
         .sheet(item: $backend.editingClip) { clip in
-            ClipEditorView(clip: clip, comparisonClips: backend.clips) { start, end, gains in
-                try await backend.saveEditedClip(clip, start: start, end: end, gains: gains)
+            ClipEditorView(clip: clip, comparisonClips: backend.clips) { start, end, gains, fadeIn, fadeOut in
+                try await backend.saveEditedClip(clip, start: start, end: end, gains: gains, fadeIn: fadeIn, fadeOut: fadeOut)
             }
         }
         .overlay(alignment: .top) {

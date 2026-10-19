@@ -496,7 +496,7 @@ final class CaptureBackend: ObservableObject {
         }
     }
 
-    func saveEditedClip(_ source: Clip, start: Double, end: Double, gains: [Double]) async throws {
+    func saveEditedClip(_ source: Clip, start: Double, end: Double, gains: [Double], fadeIn: Double = 0, fadeOut: Double = 0) async throws {
         guard !isLibraryBusy, !isSaveInProgress else { throw ClipEditorError.busy }
         isLibraryBusy = true
         defer { isLibraryBusy = false }
@@ -504,7 +504,7 @@ final class CaptureBackend: ObservableObject {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         do {
             let output = folder.appendingPathComponent("clip.mov")
-            try await ClipEditor.export(source: source.editableSourceURL ?? source.clipURL, output: output, start: start, end: end, gains: gains)
+            try await ClipEditor.export(source: source.editableSourceURL ?? source.clipURL, output: output, start: start, end: end, gains: gains, fadeIn: fadeIn, fadeOut: fadeOut)
             let thumbnail = folder.appendingPathComponent("thumbnail.jpg")
             try? await VideoThumbnailGenerator().generateThumbnail(for: output, outputURL: thumbnail)
             var clip = Clip(id: UUID(), gameID: source.gameID, gameName: source.gameName,
