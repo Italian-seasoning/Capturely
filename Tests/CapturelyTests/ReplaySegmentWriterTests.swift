@@ -198,3 +198,98 @@ import Testing
     #expect(ReplaySegmentWriter.audioMonitorSampleStride(for: 4_096) == 2)
     #expect(ReplaySegmentWriter.audioMonitorSampleStride(for: 96_000) == 47)
 }
+
+@Test func replaySegmentWriterJoinsSegmentsWithoutGapsWhenAudioArrivesLate() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let writer = ReplaySegmentWriter(directory: directory, maximumDurationSeconds: 60, segmentDurationSeconds: 1)
+    try writer.startRecording(preset: .balanced)
+
+    let audioFrames = 1_024
+    var nextAudioFrame = 0
+    for frame in 0..<180 {
+        let seconds = Double(frame) / 60
+        // Real-time pacing: the realtime encoder drops frames that arrive faster than it can take them.
+        try await Task.sleep(for: .milliseconds(16))
+        writer.append(sampleBuffer: syntheticVideoSample(at: CMTime(value: Int64(frame * 10), timescale: 600)), type: .screen)
+        // ScreenCaptureKit audio regularly lands after the video frame with the same timestamp.
+        while Double(nextAudioFrame + audioFrames) / 48_000 <= seconds - 0.1 {
+            writer.append(sampleBuffer: syntheticAudioSample(startFrame: nextAudioFrame, frames: audioFrames), type: .audio)
+            nextAudioFrame += audioFrames
+        }
+    }
+    await writer.stopRecording()
+
+    let segments = writer.recentSegments(forReplayDuration: 60)
+    #expect(segments.count == 3)
+    for segment in segments.prefix(2) {
+        #expect(abs(segment.durationSeconds - 1) < 0.001)
+        let asset = AVURLAsset(url: segment.url)
+        let videoTrack = try #require(try await asset.loadTracks(withMediaType: .video).first)
+        let videoRange = try await videoTrack.load(.timeRange)
+        let audioTrack = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+        let audioRange = try await audioTrack.load(.timeRange)
+        #expect(abs(videoRange.end.seconds - 1) < 0.02, "video ends at \(videoRange.end.seconds)")
+        #expect(audioRange.start.seconds < 0.025)
+        #expect(abs(audioRange.end.seconds - 1) < 0.025)
+    }
+}
+
+@Test func clipEditorSavesTrimmedCopiesWithPassthroughAndFades() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let writer = ReplaySegmentWriter(directory: directory, maximumDurationSeconds: 60)
+    try writer.startRecording(preset: .balanced)
+    var nextAudioFrame = 0
+    for frame in 0..<90 {
+        try await Task.sleep(for: .milliseconds(16))
+        writer.append(sampleBuffer: syntheticVideoSample(at: CMTime(value: Int64(frame * 10), timescale: 600)), type: .screen)
+        while Double(nextAudioFrame + 1_024) / 48_000 <= Double(frame) / 60 {
+            writer.append(sampleBuffer: syntheticAudioSample(startFrame: nextAudioFrame, frames: 1_024), type: .audio)
+            nextAudioFrame += 1_024
+        }
+    }
+    await writer.stopRecording()
+    let source = try #require(writer.recentSegments(forReplayDuration: 60).first).url
+
+    for (name, fade) in [("copy.mov", 0.0), ("fade.mov", 0.2)] {
+        let output = directory.appendingPathComponent(name)
+        try await ClipEditor.export(source: source, output: output, start: 0.25, end: 1.25, gains: [1], fadeIn: fade, fadeOut: fade)
+        let asset = AVURLAsset(url: output)
+        #expect(abs(try await asset.load(.duration).seconds - 1) < 0.05, "\(name)")
+        #expect(try await asset.loadTracks(withMediaType: .audio).count == 1, "\(name)")
+    }
+}
+
+private func syntheticVideoSample(at time: CMTime) -> CMSampleBuffer {
+    var pixelBuffer: CVPixelBuffer?
+    CVPixelBufferCreate(nil, 320, 180, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                        [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer)
+    var format: CMVideoFormatDescription?
+    CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: pixelBuffer!, formatDescriptionOut: &format)
+    var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: time, decodeTimeStamp: .invalid)
+    var sample: CMSampleBuffer?
+    CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: pixelBuffer!, formatDescription: format!,
+                                             sampleTiming: &timing, sampleBufferOut: &sample)
+    return sample!
+}
+
+private func syntheticAudioSample(startFrame: Int, frames: Int) -> CMSampleBuffer {
+    var description = AudioStreamBasicDescription(
+        mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM, mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+    var format: CMAudioFormatDescription?
+    CMAudioFormatDescriptionCreate(allocator: nil, asbd: &description, layoutSize: 0, layout: nil, magicCookieSize: 0,
+                                   magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
+    let length = frames * 8
+    var block: CMBlockBuffer?
+    CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: length, blockAllocator: nil,
+                                       customBlockSource: nil, offsetToData: 0, dataLength: length,
+                                       flags: kCMBlockBufferAssureMemoryNowFlag, blockBufferOut: &block)
+    CMBlockBufferFillDataBytes(with: 0, blockBuffer: block!, offsetIntoDestination: 0, dataLength: length)
+    var sample: CMSampleBuffer?
+    CMAudioSampleBufferCreateReadyWithPacketDescriptions(allocator: nil, dataBuffer: block!, formatDescription: format!,
+        sampleCount: frames, presentationTimeStamp: CMTime(value: Int64(startFrame), timescale: 48_000),
+        packetDescriptions: nil, sampleBufferOut: &sample)
+    return sample!
+}

@@ -7,7 +7,11 @@ BUNDLE_ID="com.italianseasoning.capturely"
 VERSION="${CAPTURELY_VERSION:-0.1.3}"
 VERSION="${VERSION#v}"
 DIST_DIR="$ROOT/dist"
-APP_DIR="$DIST_DIR/$APP_NAME.app"
+DIST_APP_DIR="$DIST_DIR/$APP_NAME.app"
+# File Provider can restore Finder metadata while bundles in Documents are signed.
+STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/capturely.XXXXXX")"
+trap 'rm -rf "$STAGING_DIR"' EXIT
+APP_DIR="$STAGING_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -18,6 +22,7 @@ DERIVED_DATA_DIR="$DIST_DIR/XcodeDerivedData"
 XCODE_PRODUCT="$DERIVED_DATA_DIR/Build/Products/Release/$APP_NAME"
 
 sign_app_bundle() {
+  xattr -cr "$APP_DIR"
   # Keep the certificate associated with the existing Screen Recording approval.
   # Never switch identity just because another certificate is installed.
   local requested_identity="${CAPTURELY_CODE_SIGN_IDENTITY:-Capturely Local Development}"
@@ -57,13 +62,11 @@ xcodebuild \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA_DIR" \
+  ENABLE_CODE_COVERAGE=NO \
   build
 
 test -x "$XCODE_PRODUCT"
 
-if [[ "${1:-}" != "--verify" ]]; then
-  pkill -x "$APP_NAME" 2>/dev/null || true
-fi
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 cp "$XCODE_PRODUCT" "$MACOS_DIR/$APP_NAME"
@@ -123,15 +126,54 @@ cat > "$ENTITLEMENTS_FILE" <<'PLIST'
 PLIST
 
 sign_app_bundle
+codesign --verify --strict --deep "$APP_DIR"
+rm -rf "$DIST_APP_DIR"
+ditto --norsrc --noextattr "$APP_DIR" "$DIST_APP_DIR"
+# Keep verified staging authoritative; File Provider may re-stamp the Documents copy.
 
 if [[ "${1:-}" == "--verify" ]]; then
   otool -l "$MACOS_DIR/$APP_NAME" | grep -q "@executable_path/../Frameworks"
   test -x "$MACOS_DIR/$APP_NAME"
   plutil -lint "$CONTENTS_DIR/Info.plist"
-  codesign --verify --strict --deep "$APP_DIR"
   codesign -dvv "$APP_DIR" 2>&1 | grep -E "Identifier=|Authority=|Signature="
-  echo "Verified $APP_DIR"
+  echo "Verified signed staging build; copied to $DIST_APP_DIR"
   exit 0
 fi
 
-open -n "$APP_DIR"
+# Keep runtime permission approval attached to one installed path across worktrees.
+INSTALLED_APP="/Applications/$APP_NAME.app"
+INSTALL_STAGING_DIR="$(mktemp -d "/Applications/.Capturely-install.XXXXXX")"
+INSTALL_CANDIDATE="$INSTALL_STAGING_DIR/$APP_NAME.app"
+INSTALL_BACKUP="$INSTALL_STAGING_DIR/previous.app"
+INSTALL_COMMITTED=0
+cleanup_install() {
+  local rollback_failed=0
+  if [[ "$INSTALL_COMMITTED" == 0 && ( -e "$INSTALL_BACKUP" || -L "$INSTALL_BACKUP" ) ]]; then
+    if [[ -e "$INSTALLED_APP" || -L "$INSTALLED_APP" ]]; then
+      mv "$INSTALLED_APP" "$INSTALL_STAGING_DIR/uncommitted.app" || rollback_failed=1
+    fi
+    if (( rollback_failed == 0 )); then
+      mv "$INSTALL_BACKUP" "$INSTALLED_APP" || rollback_failed=1
+    fi
+    if (( rollback_failed )); then
+      print -u2 "Rollback could not finish; previous app retained at $INSTALL_BACKUP"
+      rm -rf "$STAGING_DIR"
+      return 1
+    fi
+  fi
+  rm -rf "$INSTALL_STAGING_DIR" "$STAGING_DIR"
+}
+trap cleanup_install EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+ditto --norsrc --noextattr "$APP_DIR" "$INSTALL_CANDIDATE" || exit 1
+codesign --verify --strict --deep "$INSTALL_CANDIDATE" || exit 1
+pkill -x "$APP_NAME" 2>/dev/null || true
+if [[ -e "$INSTALLED_APP" || -L "$INSTALLED_APP" ]]; then
+  mv "$INSTALLED_APP" "$INSTALL_BACKUP" || exit 1
+fi
+mv "$INSTALL_CANDIDATE" "$INSTALLED_APP" || exit 1
+codesign --verify --strict --deep "$INSTALLED_APP" || exit 1
+INSTALL_COMMITTED=1
+open -n "$INSTALLED_APP"

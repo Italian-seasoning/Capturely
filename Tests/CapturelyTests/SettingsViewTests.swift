@@ -108,7 +108,7 @@ import Testing
     #expect(microphoneDeviceID! == nil)
     #expect(saveClipHotkey == .shiftCommandC)
     #expect(customPresets.map(\.maximumHeight).contains(1440))
-    #expect(customPresets.map(\.maximumFramesPerSecond).contains(60))
+    #expect(customPresets.map(\.maximumFramesPerSecond).contains(120))
     #expect(customPresets.map(\.videoBitrateMbps).contains(32))
     #expect(systemAudioMix == 0.75)
     #expect(microphoneMix == 1.1)

@@ -190,10 +190,9 @@ struct SettingsView: View {
                     CyberSegmentedControl(
                         label: "Frame Rate Cap",
                         selection: customFrameRateBinding,
-                        choices: [
-                            CyberChoice(value: 30, label: "30 fps"),
-                            CyberChoice(value: 60, label: "60 fps")
-                        ],
+                        choices: ([30, 60] + (settings.customPreset.maximumHeight <= 1080 ? [120] : [])).map {
+                            CyberChoice(value: $0, label: "\($0) fps")
+                        },
                         isEnabled: !isLocked
                     )
 
@@ -207,7 +206,7 @@ struct SettingsView: View {
                 }
 
                     CyberInfoRow(label: "Current Quality", value: selectedPreset.displayName)
-                    Text("Light: 720p30 for minimum load. Rivals: 1080p60 for fast action. Studio: 1440p60 for more detail. Custom: tune resolution, codec, and bitrate.")
+                    Text("Light: 720p30 for minimum load. Rivals: 1080p60 for fast action. Studio: 1440p60 for more detail. Custom: up to 1080p120 or 1440p60; tune codec and bitrate.")
                         .font(.caption)
                         .foregroundStyle(CyberTheme.muted)
                         .fixedSize(horizontal: false, vertical: true)

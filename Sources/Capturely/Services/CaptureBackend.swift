@@ -63,6 +63,7 @@ final class CaptureBackend: ObservableObject {
     private var hasActivatedCaptureRuntime = false
     private var isPerformanceFallbackActive = false
     private var isStartingManualCapture = false
+    private var isAudioPresentationActive = true
 
     init(
         appPaths: AppPaths = AppPaths(),
@@ -92,11 +93,11 @@ final class CaptureBackend: ObservableObject {
         }
         replayWriter.onAudioMonitorUpdated = { [weak self] in
             Task { @MainActor in
-                self?.updateHealthOnly(lastError: self?.lastError)
+                self?.audioMonitorDidUpdate()
             }
         }
         replayWriter.onMicrophoneLevelUpdated = { [weak self] in
-            Task { @MainActor in self?.updateHealthOnly(lastError: self?.lastError) }
+            Task { @MainActor in self?.microphoneLevelDidUpdate() }
         }
     }
 
@@ -495,7 +496,7 @@ final class CaptureBackend: ObservableObject {
         }
     }
 
-    func saveEditedClip(_ source: Clip, start: Double, end: Double, gains: [Double]) async throws {
+    func saveEditedClip(_ source: Clip, start: Double, end: Double, gains: [Double], fadeIn: Double = 0, fadeOut: Double = 0) async throws {
         guard !isLibraryBusy, !isSaveInProgress else { throw ClipEditorError.busy }
         isLibraryBusy = true
         defer { isLibraryBusy = false }
@@ -503,7 +504,7 @@ final class CaptureBackend: ObservableObject {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         do {
             let output = folder.appendingPathComponent("clip.mov")
-            try await ClipEditor.export(source: source.editableSourceURL ?? source.clipURL, output: output, start: start, end: end, gains: gains)
+            try await ClipEditor.export(source: source.editableSourceURL ?? source.clipURL, output: output, start: start, end: end, gains: gains, fadeIn: fadeIn, fadeOut: fadeOut)
             let thumbnail = folder.appendingPathComponent("thumbnail.jpg")
             try? await VideoThumbnailGenerator().generateThumbnail(for: output, outputURL: thumbnail)
             var clip = Clip(id: UUID(), gameID: source.gameID, gameName: source.gameName,
@@ -865,16 +866,42 @@ final class CaptureBackend: ObservableObject {
         updateHealthOnly(lastError: message)
     }
 
-    private func updateHealthOnly(lastError: String?) {
+    func setAudioPresentationActive(_ active: Bool) {
+        guard isAudioPresentationActive != active else { return }
+        isAudioPresentationActive = active
+        if active {
+            updateDerivedState(windowTitle: currentMatch?.detectedAppName, isWindowLocked: captureCoordinator.state.isRecording)
+            updateMicrophoneSignal(publishLevel: true)
+        }
+    }
+
+    func audioMonitorDidUpdate() {
+        guard isAudioPresentationActive else { return }
+        updateHealthOnly(lastError: lastError)
+    }
+
+    func microphoneLevelDidUpdate() {
+        if isAudioPresentationActive {
+            updateHealthOnly(lastError: lastError)
+        } else if settings.reactionClippingEnabled {
+            updateMicrophoneSignal(publishLevel: false)
+        }
+    }
+
+    private func updateMicrophoneSignal(publishLevel: Bool) {
         let signal = captureCoordinator.replaySegmentWriter.microphoneSignal
         let now = ProcessInfo.processInfo.systemUptime
         let level = captureCoordinator.state.isRecording && now - signal.sampledAt < 1.5 ? signal.level : 0
-        if microphoneLevel != level { microphoneLevel = level }
+        if publishLevel, microphoneLevel != level { microphoneLevel = level }
         if reactionDetector.shouldClip(level: signal.level, sampledAt: signal.sampledAt, now: now,
             threshold: settings.reactionThreshold, cooldown: settings.reactionCooldownSeconds,
             eligible: settings.reactionClippingEnabled && settings.recordsMicrophone && status.canSaveClip && !isLibraryBusy && !isSaveInProgress) {
             saveClipRequested()
         }
+    }
+
+    private func updateHealthOnly(lastError: String?) {
+        updateMicrophoneSignal(publishLevel: isAudioPresentationActive)
         let metrics = captureCoordinator.replaySegmentWriter.healthMetrics
         let locked = captureCoordinator.state.locksCaptureConfiguration
         if isCaptureConfigurationLocked != locked { isCaptureConfigurationLocked = locked }

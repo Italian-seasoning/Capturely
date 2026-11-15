@@ -28,7 +28,7 @@ struct FixedWindowConfigurator: NSViewRepresentable {
         }
         window.minSize = minimumSize
         window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let cyberWindowMask: NSWindow.StyleMask = [.borderless, .resizable]
+        let cyberWindowMask: NSWindow.StyleMask = [.borderless, .resizable, .miniaturizable]
         if window.styleMask != cyberWindowMask {
             window.styleMask = cyberWindowMask
         }

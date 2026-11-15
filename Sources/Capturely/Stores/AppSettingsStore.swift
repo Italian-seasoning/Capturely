@@ -74,7 +74,7 @@ struct CustomCapturePresetSettings: Codable, Equatable, Hashable, Sendable {
     var performanceSafe: CustomCapturePresetSettings {
         CustomCapturePresetSettings(
             maximumHeight: min(max(maximumHeight, 720), 1440),
-            maximumFramesPerSecond: min(max(maximumFramesPerSecond, 24), 60),
+            maximumFramesPerSecond: min(max(maximumFramesPerSecond, 24), maximumHeight <= 1080 ? 120 : 60),
             videoBitrateMbps: min(max(videoBitrateMbps, 5), 36),
             codec: codec
         )

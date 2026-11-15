@@ -24,6 +24,7 @@ struct ContentView: View {
     @EnvironmentObject private var backend: CaptureBackend
     @State private var selectedPage: CapturelyPage = .recording
     @State private var isOnboardingSettingsOpen = false
+    @State private var isRecordingWindowVisible = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var navigation
 
@@ -55,6 +56,10 @@ struct ContentView: View {
                 )
             }
         }
+        .background(RecordingWindowVisibility { isRecordingWindowVisible = $0 })
+        .onChange(of: isAudioPresentationActive, initial: true) { _, active in
+            backend.setAudioPresentationActive(active)
+        }
         .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(ThemePreferences.shared.isLight ? .light : .dark)
         .onReceive(NotificationCenter.default.publisher(for: .capturelyOpenPageRequested)) { notification in
@@ -64,6 +69,10 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var isAudioPresentationActive: Bool {
+        isRecordingWindowVisible || !backend.settings.hasCompletedOnboarding || backend.editingClip != nil
     }
 
     private var mainInterface: some View {
@@ -148,8 +157,8 @@ struct ContentView: View {
         .foregroundStyle(CyberTheme.text)
         .transaction { if reduceMotion { $0.animation = nil } }
         .sheet(item: $backend.editingClip) { clip in
-            ClipEditorView(clip: clip, comparisonClips: backend.clips) { start, end, gains in
-                try await backend.saveEditedClip(clip, start: start, end: end, gains: gains)
+            ClipEditorView(clip: clip, comparisonClips: backend.clips) { start, end, gains, fadeIn, fadeOut in
+                try await backend.saveEditedClip(clip, start: start, end: end, gains: gains, fadeIn: fadeIn, fadeOut: fadeOut)
             }
         }
         .overlay(alignment: .top) {
@@ -168,21 +177,25 @@ struct ContentView: View {
     private var detailView: some View {
         switch selectedPage {
         case .recording:
-            RecordingView(
-                status: backend.status,
-                recordingState: backend.recordingState,
-                health: backend.health,
-                settings: backend.settings,
-                isDebugVisible: backend.isDebugVisible,
-                recentEvents: backend.recentEvents,
-                recentClips: backend.recentClips,
-                lastBookmarkAt: backend.lastBookmarkAt,
-                startCapture: backend.startCaptureRequested,
-                stopCapture: backend.stopCaptureRequested,
-                saveClip: backend.saveClipRequested,
-                toggleDebug: backend.toggleDebugVisibility,
-                exportDiagnostics: backend.exportDiagnostics
-            )
+            if isAudioPresentationActive {
+                RecordingView(
+                    status: backend.status,
+                    recordingState: backend.recordingState,
+                    health: backend.health,
+                    settings: backend.settings,
+                    isDebugVisible: backend.isDebugVisible,
+                    recentEvents: backend.recentEvents,
+                    recentClips: backend.recentClips,
+                    lastBookmarkAt: backend.lastBookmarkAt,
+                    startCapture: backend.startCaptureRequested,
+                    stopCapture: backend.stopCaptureRequested,
+                    saveClip: backend.saveClipRequested,
+                    toggleDebug: backend.toggleDebugVisibility,
+                    exportDiagnostics: backend.exportDiagnostics
+                )
+            } else {
+                Color.clear
+            }
         case .library:
             LibraryView(
                 clips: backend.clips,
